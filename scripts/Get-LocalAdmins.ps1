@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Coletor de membros do grupo "Administrators" local — adminsearch.
+    Coletor de membros do grupo "Administrators" local - adminsearch.
 
 .DESCRIPTION
     Auto-contido para deploy via ScreenConnect (ConnectWise).
@@ -9,7 +9,7 @@
     3. POSTa JSON em https://<servidor>/api/v1/ingest com Bearer token.
     4. Opcionalmente instala uma Scheduled Task que reexecuta diariamente.
 
-    Nao expande grupos de AD — o servidor faz isso via LDAP.
+    Nao expande grupos de AD - o servidor faz isso via LDAP.
 
 .PARAMETER IngestUrl
     URL completa do endpoint de ingestao (ex.: https://adminsearch.madeiramadeira.com.br/api/v1/ingest)
@@ -164,7 +164,7 @@ if ($InstallTask) {
         -Trigger @($triggerDaily, $triggerBoot) `
         -Principal $principal `
         -Settings $settings `
-        -Description 'adminsearch — coleta diaria do grupo Administrators local' `
+        -Description 'adminsearch - coleta diaria do grupo Administrators local' `
         -Force | Out-Null
 
     Write-Log "Scheduled Task registrada. Roda em 06:00 e a cada boot (com delay 5min)."
@@ -328,11 +328,11 @@ function Get-LocalAdminMembers {
 }
 
 # ============================================================
-# 8a. Remediacao — executar acoes recebidas do servidor
+# 8a. Remediacao - executar acoes recebidas do servidor
 # ============================================================
 function Test-WellKnownSid {
     param([string]$Sid)
-    # Authoritys / prefixos hard-coded — cinto e suspensorio do servidor
+    # Authoritys / prefixos hard-coded - cinto e suspensorio do servidor
     if ($Sid -like 'S-1-5-32-*') { return $true }   # BUILTIN
     if ($Sid -eq 'S-1-5-18')     { return $true }   # SYSTEM
     if ($Sid -eq 'S-1-5-19')     { return $true }   # LOCAL SERVICE
@@ -357,13 +357,13 @@ function Invoke-Remediation {
         error       = $null
     }
 
-    # Trava 1 — recusar SIDs well-known
+    # Trava 1 - recusar SIDs well-known
     if (Test-WellKnownSid -Sid $Action.targetSid) {
         Write-Log "Acao $($Action.id) recusada (well-known $($Action.targetSid))" 'WARN'
         return $base + @{ result = 'refused_well_known'; error = "SID well-known: $($Action.targetSid)" }
     }
 
-    # Trava 2 — nao esvaziar o grupo
+    # Trava 2 - nao esvaziar o grupo
     $survivors = $CurrentMembers | Where-Object {
         $_.sid -ne $Action.targetSid -and -not (Test-WellKnownSid -Sid $_.sid)
     }
@@ -375,7 +375,7 @@ function Invoke-Remediation {
     # SID esta mesmo no grupo?
     $present = $CurrentMembers | Where-Object { $_.sid -eq $Action.targetSid } | Select-Object -First 1
     if (-not $present) {
-        Write-Log "Acao $($Action.id) — SID $($Action.targetSid) ja nao esta no grupo" 'INFO'
+        Write-Log "Acao $($Action.id) - SID $($Action.targetSid) ja nao esta no grupo" 'INFO'
         return $base + @{ result = 'not_found'; error = 'SID nao encontrado no grupo' }
     }
 
@@ -386,7 +386,7 @@ function Invoke-Remediation {
         try {
             Remove-LocalGroupMember -SID 'S-1-5-32-544' -Member $sidObj -ErrorAction Stop
         } catch {
-            # Fallback ADSI — caminho legado, funciona em qualquer Windows ainda suportado
+            # Fallback ADSI - caminho legado, funciona em qualquer Windows ainda suportado
             $group = [ADSI]"WinNT://./S-1-5-32-544,group"
             $group.Remove("WinNT://$($Action.targetSid)")
         }
@@ -426,7 +426,7 @@ function Send-ActionResults {
             Write-Log "Tentativa $($i+1)/$maxAttempts (results) falhou: $msg" 'WARN'
             if ($i -eq $maxAttempts - 1) {
                 Write-Log "Falha definitiva ao postar resultados: $msg" 'ERROR'
-                # Nao re-lanca — perda de resultado nao trava a coleta
+                # Nao re-lanca - perda de resultado nao trava a coleta
                 return $null
             }
         }
