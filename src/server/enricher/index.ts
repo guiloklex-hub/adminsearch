@@ -211,11 +211,12 @@ export class Enricher {
         continue;
       }
 
-      // Grupos do domínio: expandir, com fallback por sAMAccountName
+      // Grupos do domínio: expandir, com fallback por sAMAccountName e cn
       const expanded = await expandGroupBySid(
         this.deps.ldap,
         groupSid,
         rawGroup?.name ?? null,
+        this.deps.logger,
       ).catch((err) => {
         this.deps.logger.warn({ err, groupSid }, 'falha ao expandir grupo');
         return null;
