@@ -295,21 +295,35 @@ interface MachineRow {
   has_exception: boolean;
 }
 
+const ALL_SOURCES = ['AD_USER', 'LOCAL_USER', 'WELL_KNOWN', 'ORPHAN_SID'] as const;
+type SourceKey = (typeof ALL_SOURCES)[number];
+
 function FindingsByUser() {
   const [q, setQ] = useState('');
-  const [onlyAdUser, setOnlyAdUser] = useState(true);
+  // Por padrão mostra só o que requer atenção do operador: AD_USER (usuários
+  // nominais) e ORPHAN_SID (contas estranhas). Esconde LOCAL_USER e WELL_KNOWN
+  // que poluem com "HOSTNAME\Administrador" e contas locais.
+  const [sources, setSources] = useState<SourceKey[]>(['AD_USER', 'ORPHAN_SID']);
   const [hideServiceAccounts, setHideServiceAccounts] = useState(true);
   const [hideExceptions, setHideExceptions] = useState(true);
   const [onlyEnabled, setOnlyEnabled] = useState(true);
   const [expandedSid, setExpandedSid] = useState<string | null>(null);
 
+  const toggleSource = (s: SourceKey) => {
+    setSources((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
+  };
+
   const { data, isLoading } = useQuery({
-    queryKey: ['findings', 'by-user', { q, onlyAdUser, hideServiceAccounts, hideExceptions, onlyEnabled }],
+    queryKey: [
+      'findings',
+      'by-user',
+      { q, sources, hideServiceAccounts, hideExceptions, onlyEnabled },
+    ],
     queryFn: () =>
       api<{ items: UserRow[] }>(
         `/api/v1/findings/by-user${buildQuery({
           q,
-          source: onlyAdUser ? ['AD_USER'] : undefined,
+          source: sources.length > 0 ? sources : ['__NONE__'], // forçar empty se nenhum
           hideServiceAccounts,
           hideExceptions,
           onlyEnabled,
@@ -347,7 +361,30 @@ function FindingsByUser() {
             fontSize: 13,
           }}
         />
-        <Toggle label="Só AD_USER" value={onlyAdUser} onChange={setOnlyAdUser} />
+
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: 'var(--color-muted)' }}>Origem:</span>
+          {ALL_SOURCES.map((s) => (
+            <button
+              type="button"
+              key={s}
+              onClick={() => toggleSource(s)}
+              style={{
+                padding: '3px 8px',
+                fontSize: 11,
+                borderRadius: 999,
+                border: '1px solid var(--color-border)',
+                background: sources.includes(s) ? 'var(--color-surface-2)' : 'transparent',
+                color: sources.includes(s) ? 'var(--color-text)' : 'var(--color-muted)',
+                fontWeight: sources.includes(s) ? 600 : 400,
+                cursor: 'pointer',
+              }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+
         <Toggle label="Só habilitados" value={onlyEnabled} onChange={setOnlyEnabled} />
         <Toggle
           label="Esconder service accounts"
