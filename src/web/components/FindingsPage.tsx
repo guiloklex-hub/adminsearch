@@ -264,57 +264,301 @@ function FindingsByMachine(props: {
   );
 }
 
+interface UserRow {
+  sid: string;
+  name: string;
+  sam_account_name: string | null;
+  user_principal_name: string | null;
+  email: string | null;
+  department: string | null;
+  title: string | null;
+  ad_enabled: boolean | null;
+  is_service_account: boolean;
+  last_logon: string | null;
+  source: string;
+  has_exception: boolean;
+  machine_count: number;
+  critical_count: number;
+  high_count: number;
+  medium_count: number;
+  via_group_count: number;
+}
+
+interface MachineRow {
+  machine_id: string;
+  host_name: string;
+  domain: string | null;
+  last_logged_user: string | null;
+  last_seen_at: string;
+  via_group: string | null;
+  severity: string;
+  has_exception: boolean;
+}
+
 function FindingsByUser() {
+  const [q, setQ] = useState('');
+  const [onlyAdUser, setOnlyAdUser] = useState(true);
+  const [hideServiceAccounts, setHideServiceAccounts] = useState(true);
+  const [hideExceptions, setHideExceptions] = useState(true);
+  const [onlyEnabled, setOnlyEnabled] = useState(true);
+  const [expandedSid, setExpandedSid] = useState<string | null>(null);
+
   const { data, isLoading } = useQuery({
-    queryKey: ['findings', 'by-user'],
+    queryKey: ['findings', 'by-user', { q, onlyAdUser, hideServiceAccounts, hideExceptions, onlyEnabled }],
     queryFn: () =>
-      api<{
-        items: Array<{
-          sid: string;
-          name: string;
-          sam_account_name: string | null;
-          department: string | null;
-          machine_count: number;
-          critical_count: number;
-          high_count: number;
-        }>;
-      }>('/api/v1/findings/by-user?limit=200'),
+      api<{ items: UserRow[] }>(
+        `/api/v1/findings/by-user${buildQuery({
+          q,
+          source: onlyAdUser ? ['AD_USER'] : undefined,
+          hideServiceAccounts,
+          hideExceptions,
+          onlyEnabled,
+          limit: 500,
+        })}`,
+      ),
   });
-  if (isLoading) return <div>Carregando...</div>;
+
   return (
-    <div
-      style={{
-        background: 'var(--color-surface)',
-        border: '1px solid var(--color-border)',
-        borderRadius: 12,
-        padding: 8,
-      }}
-    >
-      <table style={tableStyle}>
-        <thead>
-          <tr>
-            <th style={thStyle}>Usuário</th>
-            <th style={thStyle}>SAM</th>
-            <th style={thStyle}>Departamento</th>
-            <th style={{ ...thStyle, textAlign: 'right' }}>Máquinas</th>
-            <th style={{ ...thStyle, textAlign: 'right' }}>Críticos</th>
-            <th style={{ ...thStyle, textAlign: 'right' }}>Altos</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data?.items.map((u) => (
-            <tr key={u.sid}>
-              <td style={tdStyle}>{u.name}</td>
-              <td style={tdStyle}>{u.sam_account_name ?? '—'}</td>
-              <td style={tdStyle}>{u.department ?? '—'}</td>
-              <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 600 }}>{u.machine_count}</td>
-              <td style={{ ...tdStyle, textAlign: 'right' }}>{u.critical_count}</td>
-              <td style={{ ...tdStyle, textAlign: 'right' }}>{u.high_count}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div
+        style={{
+          background: 'var(--color-surface)',
+          border: '1px solid var(--color-border)',
+          borderRadius: 12,
+          padding: 12,
+          display: 'flex',
+          gap: 16,
+          alignItems: 'center',
+          flexWrap: 'wrap',
+        }}
+      >
+        <input
+          placeholder="Buscar nome, SAM, email, departamento..."
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{
+            flex: 1,
+            minWidth: 280,
+            padding: '6px 10px',
+            background: 'var(--color-surface-2)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 6,
+            color: 'var(--color-text)',
+            fontSize: 13,
+          }}
+        />
+        <Toggle label="Só AD_USER" value={onlyAdUser} onChange={setOnlyAdUser} />
+        <Toggle label="Só habilitados" value={onlyEnabled} onChange={setOnlyEnabled} />
+        <Toggle
+          label="Esconder service accounts"
+          value={hideServiceAccounts}
+          onChange={setHideServiceAccounts}
+        />
+        <Toggle
+          label="Esconder exceções"
+          value={hideExceptions}
+          onChange={setHideExceptions}
+        />
+      </div>
+
+      <div
+        style={{
+          background: 'var(--color-surface)',
+          border: '1px solid var(--color-border)',
+          borderRadius: 12,
+          padding: 8,
+        }}
+      >
+        {isLoading ? (
+          <div style={{ padding: 16 }}>Carregando...</div>
+        ) : (
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={{ ...thStyle, width: 24 }} />
+                <th style={thStyle}>Usuário</th>
+                <th style={thStyle}>SAM / UPN</th>
+                <th style={thStyle}>Email</th>
+                <th style={thStyle}>Departamento</th>
+                <th style={thStyle}>AD</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Máquinas</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Críticos</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Altos</th>
+                <th style={thStyle}>Origem</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data?.items.map((u) => {
+                const expanded = expandedSid === u.sid;
+                return (
+                  <UserAggregateRow
+                    key={u.sid}
+                    user={u}
+                    expanded={expanded}
+                    onToggle={() => setExpandedSid(expanded ? null : u.sid)}
+                  />
+                );
+              })}
+              {data && data.items.length === 0 && (
+                <tr>
+                  <td colSpan={10} style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}>
+                    Nenhum usuário casa com esses filtros.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {data && (
+        <div style={{ color: 'var(--color-muted)', fontSize: 12 }}>
+          {data.items.length} usuários distintos · click numa linha para ver as máquinas
+        </div>
+      )}
     </div>
+  );
+}
+
+function UserAggregateRow({
+  user,
+  expanded,
+  onToggle,
+}: {
+  user: UserRow;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { data: machines, isLoading } = useQuery({
+    queryKey: ['findings', 'user-machines', user.sid],
+    queryFn: () =>
+      api<{ items: MachineRow[] }>(
+        `/api/v1/findings/users/${encodeURIComponent(user.sid)}/machines`,
+      ),
+    enabled: expanded,
+  });
+
+  return (
+    <>
+      <tr
+        onClick={onToggle}
+        style={{
+          cursor: 'pointer',
+          background: expanded ? 'var(--color-surface-2)' : undefined,
+        }}
+      >
+        <td style={{ ...tdStyle, color: 'var(--color-muted)' }}>{expanded ? '▾' : '▸'}</td>
+        <td style={tdStyle}>
+          <div style={{ fontWeight: 600 }}>{user.name}</div>
+          {user.title && (
+            <div style={{ fontSize: 11, color: 'var(--color-muted)' }}>{user.title}</div>
+          )}
+        </td>
+        <td style={tdStyle}>
+          <div>{user.sam_account_name ?? '—'}</div>
+          {user.user_principal_name && (
+            <div style={{ fontSize: 11, color: 'var(--color-muted)' }}>
+              {user.user_principal_name}
+            </div>
+          )}
+        </td>
+        <td style={tdStyle}>{user.email ?? '—'}</td>
+        <td style={tdStyle}>{user.department ?? '—'}</td>
+        <td style={tdStyle}>
+          {user.ad_enabled === null ? (
+            <span style={{ color: 'var(--color-muted)' }}>—</span>
+          ) : user.ad_enabled ? (
+            <span style={{ color: '#79d28a', fontSize: 12 }}>habilitado</span>
+          ) : (
+            <span style={{ color: 'var(--color-critical)', fontWeight: 600, fontSize: 12 }}>
+              DESABILITADO
+            </span>
+          )}
+          {user.is_service_account && (
+            <div style={{ fontSize: 10, color: 'var(--color-muted)' }}>service account</div>
+          )}
+          {user.has_exception && (
+            <div style={{ fontSize: 10, color: '#7ab2ff' }}>tem exception</div>
+          )}
+        </td>
+        <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 600, fontSize: 15 }}>
+          {user.machine_count}
+        </td>
+        <td
+          style={{
+            ...tdStyle,
+            textAlign: 'right',
+            color: user.critical_count > 0 ? 'var(--color-critical)' : 'var(--color-muted)',
+            fontWeight: user.critical_count > 0 ? 600 : 400,
+          }}
+        >
+          {user.critical_count}
+        </td>
+        <td
+          style={{
+            ...tdStyle,
+            textAlign: 'right',
+            color: user.high_count > 0 ? 'var(--color-high)' : 'var(--color-muted)',
+            fontWeight: user.high_count > 0 ? 600 : 400,
+          }}
+        >
+          {user.high_count}
+        </td>
+        <td style={tdStyle}>
+          <span style={{ fontSize: 11 }}>{user.source}</span>
+          {user.via_group_count > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--color-muted)' }}>
+              {user.via_group_count} via grupo
+            </div>
+          )}
+        </td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={10} style={{ ...tdStyle, padding: 16, background: 'var(--color-surface-2)' }}>
+            {isLoading ? (
+              <div>Carregando máquinas...</div>
+            ) : machines && machines.items.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                  Máquinas onde {user.name} é admin local
+                </div>
+                <table style={{ ...tableStyle, fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Host</th>
+                      <th style={thStyle}>Último user logado</th>
+                      <th style={thStyle}>Via grupo</th>
+                      <th style={thStyle}>Severidade</th>
+                      <th style={thStyle}>Último scan</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {machines.items.map((m) => (
+                      <tr key={m.machine_id}>
+                        <td style={tdStyle}>{m.host_name}</td>
+                        <td style={tdStyle}>{m.last_logged_user ?? '—'}</td>
+                        <td style={tdStyle}>{m.via_group ?? '— (direto)'}</td>
+                        <td style={tdStyle}>
+                          <SeverityBadge value={m.severity} />
+                        </td>
+                        <td style={tdStyle}>
+                          {new Date(m.last_seen_at).toLocaleString('pt-BR')}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ color: 'var(--color-muted)' }}>
+                Sem máquinas (estado pode ter mudado desde a coleta).
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

@@ -113,9 +113,47 @@ export async function registerFindingsRoutes(
   app.get('/api/v1/findings/by-user', async (req, reply) => {
     const q = z
       .object({
-        limit: z.coerce.number().int().min(1).max(500).default(50),
+        limit: z.coerce.number().int().min(1).max(1000).default(200),
+        source: z
+          .string()
+          .optional()
+          .transform((v) => (v ? v.split(',').map((s) => s.trim()) : undefined)),
+        hideExceptions: z
+          .union([z.boolean(), z.string()])
+          .optional()
+          .transform((v) => (typeof v === 'string' ? v === 'true' : v ?? false)),
+        hideServiceAccounts: z
+          .union([z.boolean(), z.string()])
+          .optional()
+          .transform((v) => (typeof v === 'string' ? v === 'true' : v ?? false)),
+        onlyEnabled: z
+          .union([z.boolean(), z.string()])
+          .optional()
+          .transform((v) => (typeof v === 'string' ? v === 'true' : v ?? false)),
+        q: z.string().trim().max(120).optional(),
       })
       .parse(req.query);
+
+    // Builder dinâmico de WHERE — colocamos em SQL bruto pra clareza
+    const conditions: string[] = ["em.source IS NOT NULL"];
+    if (q.source && q.source.length > 0) {
+      const safeSources = q.source
+        .filter((s) => /^[A-Z_]+$/.test(s))
+        .map((s) => `'${s}'`)
+        .join(',');
+      if (safeSources) conditions.push(`em.source IN (${safeSources})`);
+    }
+    if (q.hideExceptions) conditions.push('em.matched_exception_id IS NULL');
+    if (q.hideServiceAccounts) conditions.push('COALESCE(em.is_service_account, false) = false');
+    if (q.onlyEnabled) conditions.push('COALESCE(em.ad_enabled, true) = true');
+    if (q.q) {
+      const safe = q.q.replace(/'/g, "''");
+      conditions.push(
+        `(COALESCE(au.display_name,'') ILIKE '%${safe}%' OR COALESCE(au.sam_account_name,'') ILIKE '%${safe}%' OR COALESCE(au.email,'') ILIKE '%${safe}%' OR COALESCE(au.department,'') ILIKE '%${safe}%' OR em.sid ILIKE '%${safe}%')`,
+      );
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const rows = await deps.db.db.execute(sql`
       WITH latest_scan AS (
@@ -127,18 +165,60 @@ export async function registerFindingsRoutes(
       SELECT em.sid,
              COALESCE(au.display_name, em.name, em.sid) AS name,
              au.sam_account_name,
+             au.user_principal_name,
+             au.email,
              au.department,
+             au.title,
+             au.enabled AS ad_enabled,
+             au.is_service_account,
+             au.last_logon,
              em.source,
+             BOOL_OR(em.matched_exception_id IS NOT NULL) AS has_exception,
              COUNT(DISTINCT em.machine_id)::int AS machine_count,
-             MAX(em.severity) AS sample_severity,
              SUM(CASE WHEN em.severity='critical' THEN 1 ELSE 0 END)::int AS critical_count,
-             SUM(CASE WHEN em.severity='high' THEN 1 ELSE 0 END)::int AS high_count
+             SUM(CASE WHEN em.severity='high' THEN 1 ELSE 0 END)::int AS high_count,
+             SUM(CASE WHEN em.severity='medium' THEN 1 ELSE 0 END)::int AS medium_count,
+             SUM(CASE WHEN em.via_group IS NOT NULL THEN 1 ELSE 0 END)::int AS via_group_count
       FROM effective_members em
       JOIN latest_scan ls ON ls.id = em.scan_run_id
       LEFT JOIN ad_users au ON au.sid = em.sid
-      GROUP BY em.sid, au.display_name, em.name, au.sam_account_name, au.department, em.source
+      ${sql.raw(whereClause)}
+      GROUP BY em.sid, au.display_name, em.name, au.sam_account_name, au.user_principal_name,
+               au.email, au.department, au.title, au.enabled, au.is_service_account, au.last_logon,
+               em.source
       ORDER BY machine_count DESC, name ASC
       LIMIT ${q.limit};
+    `);
+
+    reply.send({ items: rows.rows });
+  });
+
+  // GET /api/v1/findings/users/:sid/machines — drill-down: máquinas onde este SID é admin
+  app.get('/api/v1/findings/users/:sid/machines', async (req, reply) => {
+    const { sid } = z
+      .object({ sid: z.string().regex(/^S-\d+-\d+(-\d+)*$/) })
+      .parse(req.params);
+
+    const rows = await deps.db.db.execute(sql`
+      WITH latest_scan AS (
+        SELECT DISTINCT ON (machine_id) machine_id, id, collected_at
+        FROM scan_runs
+        WHERE expansion_status = 'done'
+        ORDER BY machine_id, collected_at DESC
+      )
+      SELECT m.id AS machine_id,
+             m.dns_host_name AS host_name,
+             m.domain,
+             m.last_logged_user,
+             m.last_seen_at,
+             em.via_group,
+             em.severity,
+             em.matched_exception_id IS NOT NULL AS has_exception
+      FROM effective_members em
+      JOIN latest_scan ls ON ls.id = em.scan_run_id
+      JOIN machines m ON m.id = em.machine_id
+      WHERE em.sid = ${sid}
+      ORDER BY m.dns_host_name;
     `);
 
     reply.send({ items: rows.rows });
