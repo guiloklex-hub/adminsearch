@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '@web/lib/api.ts';
 import { RemediationModal, type RemediationTarget } from './RemediationModal.tsx';
 import { SeverityBadge } from './SeverityBadge.tsx';
@@ -63,12 +63,16 @@ export function MachineDetail({ id, onBack }: { id: string; onBack: () => void }
   const [tagsInput, setTagsInput] = useState('');
   const [notes, setNotes] = useState('');
   const [removeTarget, setRemoveTarget] = useState<RemediationTarget | null>(null);
-  const initialized = data?.machine.id === id;
 
-  if (initialized && data && tagsInput === '' && notes === '') {
-    setTagsInput((data.machine.tags ?? []).join(', '));
-    setNotes(data.machine.notes ?? '');
-  }
+  // Sincroniza inputs locais quando os dados da máquina chegam (ou quando a
+  // navegação muda de máquina). Roda só na mudança de id/data — não bate na
+  // edição em andamento.
+  useEffect(() => {
+    if (data?.machine.id === id) {
+      setTagsInput((data.machine.tags ?? []).join(', '));
+      setNotes(data.machine.notes ?? '');
+    }
+  }, [data?.machine.id, id, data?.machine.tags, data?.machine.notes]);
 
   const saveMutation = useMutation({
     mutationFn: () =>
