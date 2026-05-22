@@ -70,10 +70,27 @@ export async function registerStatsRoutes(
       LIMIT 10;
     `);
 
+    const recentEvents = await deps.db.db.execute(sql`
+      SELECT fe.id,
+             fe.machine_id,
+             m.dns_host_name AS host_name,
+             fe.occurred_at,
+             fe.kind,
+             fe.sid,
+             fe.name,
+             fe.details
+      FROM findings_events fe
+      JOIN machines m ON m.id = fe.machine_id
+      WHERE fe.occurred_at >= ${new Date(Date.now() - 7 * 86400_000).toISOString()}
+      ORDER BY fe.occurred_at DESC
+      LIMIT 30;
+    `);
+
     reply.send({
       cards: dash.rows[0] ?? {},
       severityDistribution: severityDist.rows,
       topUsers: topUsers.rows,
+      recentEvents: recentEvents.rows,
     });
   });
 }
