@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, buildQuery } from '@web/lib/api.ts';
+import { Pagination } from './Pagination.tsx';
 import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 
 const KINDS = [
@@ -14,9 +15,15 @@ const KINDS = [
 export function EventsPage() {
   const [kinds, setKinds] = useState<string[]>([]);
   const [sinceDays, setSinceDays] = useState<number>(30);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  useEffect(() => {
+    setPage(1);
+  }, [kinds, sinceDays, pageSize]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['events', { kinds, sinceDays }],
+    queryKey: ['events', { kinds, sinceDays, page, pageSize }],
     queryFn: () =>
       api<{
         items: Array<{
@@ -29,7 +36,8 @@ export function EventsPage() {
           name: string | null;
           details: Record<string, unknown>;
         }>;
-      }>(`/api/v1/events${buildQuery({ kind: kinds, sinceDays, pageSize: 300 })}`),
+        total: number;
+      }>(`/api/v1/events${buildQuery({ kind: kinds, sinceDays, page, pageSize })}`),
   });
 
   return (
@@ -125,6 +133,16 @@ export function EventsPage() {
           </table>
         )}
       </div>
+
+      {data && (
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={data.total}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+        />
+      )}
     </div>
   );
 }

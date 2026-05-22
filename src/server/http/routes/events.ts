@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { DbClient } from '@server/db/client.ts';
@@ -50,6 +50,12 @@ export async function registerEventsRoutes(
       .limit(q.pageSize)
       .offset((q.page - 1) * q.pageSize);
 
-    reply.send({ items, page: q.page, pageSize: q.pageSize });
+    const [totalRow] = await deps.db.db
+      .select({ c: sql<number>`count(*)::int` })
+      .from(findingsEvents)
+      .innerJoin(machines, eq(machines.id, findingsEvents.machineId))
+      .where(filters.length ? and(...filters) : undefined);
+
+    reply.send({ items, total: totalRow?.c ?? 0, page: q.page, pageSize: q.pageSize });
   });
 }

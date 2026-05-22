@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, buildQuery } from '@web/lib/api.ts';
+import { Pagination } from './Pagination.tsx';
 import { SeverityBadge } from './SeverityBadge.tsx';
 import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 
@@ -26,16 +27,24 @@ export function MachinesPage({
   const [q, setQ] = useState('');
   const [severity, setSeverity] = useState<string[]>([]);
   const [staleDays, setStaleDays] = useState<number | ''>('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  // Volta pra página 1 quando filtros mudam
+  useEffect(() => {
+    setPage(1);
+  }, [q, severity, staleDays, pageSize]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['machines', { q, severity, staleDays }],
+    queryKey: ['machines', { q, severity, staleDays, page, pageSize }],
     queryFn: () =>
-      api<{ items: MachineRow[]; total: number }>(
+      api<{ items: MachineRow[]; total: number; page: number; pageSize: number }>(
         `/api/v1/machines${buildQuery({
           q,
           severity,
           staleDays: staleDays === '' ? undefined : staleDays,
-          pageSize: 200,
+          page,
+          pageSize,
         })}`,
       ),
   });
@@ -178,9 +187,15 @@ export function MachinesPage({
         )}
       </div>
 
-      <div style={{ color: 'var(--color-muted)', fontSize: 12 }}>
-        {data ? `${data.items.length} de ${data.total} máquinas` : ''}
-      </div>
+      {data && (
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={data.total}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+        />
+      )}
     </div>
   );
 }

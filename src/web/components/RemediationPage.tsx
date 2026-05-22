@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ApiError, api, buildQuery } from '@web/lib/api.ts';
+import { Pagination } from './Pagination.tsx';
 import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 
 interface Action {
@@ -35,12 +36,18 @@ const STATUS_GROUPS = {
 export function RemediationPage() {
   const [tab, setTab] = useState<'planned' | 'pending' | 'history'>('planned');
   const statuses = STATUS_GROUPS[tab];
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  useEffect(() => {
+    setPage(1);
+  }, [tab, pageSize]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['remediation', tab],
+    queryKey: ['remediation', tab, page, pageSize],
     queryFn: () =>
       api<{ items: Action[]; total: number }>(
-        `/api/v1/remediation${buildQuery({ status: [...statuses], pageSize: 200, sinceDays: 90 })}`,
+        `/api/v1/remediation${buildQuery({ status: [...statuses], page, pageSize, sinceDays: 90 })}`,
       ),
   });
 
@@ -90,6 +97,16 @@ export function RemediationPage() {
           <HistoryTable items={data?.items ?? []} />
         )}
       </div>
+
+      {data && (
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={data.total}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+        />
+      )}
     </div>
   );
 }

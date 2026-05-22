@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, buildQuery } from '@web/lib/api.ts';
+import { Pagination } from './Pagination.tsx';
 import { RemediationModal, type RemediationTarget } from './RemediationModal.tsx';
 import { SeverityBadge } from './SeverityBadge.tsx';
 import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
@@ -105,18 +106,25 @@ function FindingsByMachine(props: {
   const { q, setQ, severity, setSeverity, source, setSource, hideExceptions, setHideExceptions, onlyOrphans, setOnlyOrphans } = props;
 
   const [removeTarget, setRemoveTarget] = useState<RemediationTarget | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  useEffect(() => {
+    setPage(1);
+  }, [q, severity, source, hideExceptions, onlyOrphans, pageSize]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['findings', { q, severity, source, hideExceptions, onlyOrphans }],
+    queryKey: ['findings', { q, severity, source, hideExceptions, onlyOrphans, page, pageSize }],
     queryFn: () =>
-      api<{ items: Finding[] }>(
+      api<{ items: Finding[]; total: number }>(
         `/api/v1/findings${buildQuery({
           q,
           severity,
           source,
           hideExceptions,
           onlyOrphans,
-          pageSize: 300,
+          page,
+          pageSize,
         })}`,
       ),
   });
@@ -255,6 +263,18 @@ function FindingsByMachine(props: {
         )}
       </div>
 
+      {data && (
+        <div style={{ gridColumn: '1 / -1' }}>
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={data.total}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        </div>
+      )}
+
       <RemediationModal
         target={removeTarget}
         onClose={() => setRemoveTarget(null)}
@@ -310,6 +330,12 @@ function FindingsByUser() {
   const [onlyEnabled, setOnlyEnabled] = useState(true);
   const [onlyDirect, setOnlyDirect] = useState(false);
   const [expandedSid, setExpandedSid] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  useEffect(() => {
+    setPage(1);
+  }, [q, sources, hideServiceAccounts, hideExceptions, onlyEnabled, onlyDirect, pageSize]);
 
   const toggleSource = (s: SourceKey) => {
     setSources((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
@@ -319,10 +345,10 @@ function FindingsByUser() {
     queryKey: [
       'findings',
       'by-user',
-      { q, sources, hideServiceAccounts, hideExceptions, onlyEnabled, onlyDirect },
+      { q, sources, hideServiceAccounts, hideExceptions, onlyEnabled, onlyDirect, page, pageSize },
     ],
     queryFn: () =>
-      api<{ items: UserRow[] }>(
+      api<{ items: UserRow[]; total: number }>(
         `/api/v1/findings/by-user${buildQuery({
           q,
           source: sources.length > 0 ? sources : ['__NONE__'], // forçar empty se nenhum
@@ -330,7 +356,8 @@ function FindingsByUser() {
           hideExceptions,
           onlyEnabled,
           onlyDirect,
-          limit: 500,
+          page,
+          pageSize,
         })}`,
       ),
   });
@@ -471,10 +498,17 @@ function FindingsByUser() {
       </div>
 
       {data && (
-        <div style={{ color: 'var(--color-muted)', fontSize: 12 }}>
-          {data.items.length} usuários distintos · click numa linha para ver as máquinas
-        </div>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={data.total}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+        />
       )}
+      <div style={{ color: 'var(--color-muted)', fontSize: 11 }}>
+        Click numa linha para ver as máquinas onde o usuário é admin.
+      </div>
     </div>
   );
 }
@@ -642,8 +676,15 @@ function UserAggregateRow({
 }
 
 function FindingsByGroup() {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize]);
+
   const { data, isLoading } = useQuery({
-    queryKey: ['findings', 'by-group'],
+    queryKey: ['findings', 'by-group', { page, pageSize }],
     queryFn: () =>
       api<{
         items: Array<{
@@ -652,10 +693,12 @@ function FindingsByGroup() {
           user_count: number;
           machine_count: number;
         }>;
-      }>('/api/v1/findings/by-group?limit=200'),
+        total: number;
+      }>(`/api/v1/findings/by-group${buildQuery({ page, pageSize })}`),
   });
   if (isLoading) return <div>Carregando...</div>;
   return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
     <div
       style={{
         background: 'var(--color-surface)',
@@ -684,6 +727,16 @@ function FindingsByGroup() {
           ))}
         </tbody>
       </table>
+    </div>
+    {data && (
+      <Pagination
+        page={page}
+        pageSize={pageSize}
+        total={data.total}
+        onPageChange={setPage}
+        onPageSizeChange={setPageSize}
+      />
+    )}
     </div>
   );
 }

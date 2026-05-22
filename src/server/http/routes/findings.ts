@@ -64,7 +64,7 @@ export async function registerFindingsRoutes(
     const limit = q.pageSize;
     const offset = (q.page - 1) * limit;
 
-    const items = await deps.db.db
+    const baseQuery = deps.db.db
       .select({
         id: effectiveMembers.id,
         machineId: effectiveMembers.machineId,
@@ -84,7 +84,6 @@ export async function registerFindingsRoutes(
         scanRuns,
         and(
           eq(scanRuns.id, effectiveMembers.scanRunId),
-          // Garante que só pegamos a última scan done por máquina
           sql`scan_runs.id = (
             SELECT id FROM scan_runs s2
             WHERE s2.machine_id = scan_runs.machine_id
@@ -95,7 +94,9 @@ export async function registerFindingsRoutes(
         ),
       )
       .innerJoin(machines, eq(machines.id, effectiveMembers.machineId))
-      .where(filters.length ? and(...filters) : undefined)
+      .where(filters.length ? and(...filters) : undefined);
+
+    const items = await baseQuery
       .orderBy(desc(sql`CASE ${effectiveMembers.severity}
         WHEN 'critical' THEN 4
         WHEN 'high' THEN 3
@@ -106,14 +107,37 @@ export async function registerFindingsRoutes(
       .limit(limit)
       .offset(offset);
 
-    reply.send({ items, page: q.page, pageSize: q.pageSize });
+    // Conta total para paginação
+    const [totalRow] = await deps.db.db
+      .select({ c: sql<number>`count(*)::int` })
+      .from(effectiveMembers)
+      .innerJoin(
+        scanRuns,
+        and(
+          eq(scanRuns.id, effectiveMembers.scanRunId),
+          sql`scan_runs.id = (
+            SELECT id FROM scan_runs s2
+            WHERE s2.machine_id = scan_runs.machine_id
+              AND s2.expansion_status = 'done'
+            ORDER BY s2.collected_at DESC
+            LIMIT 1
+          )`,
+        ),
+      )
+      .innerJoin(machines, eq(machines.id, effectiveMembers.machineId))
+      .where(filters.length ? and(...filters) : undefined);
+
+    reply.send({ items, total: totalRow?.c ?? 0, page: q.page, pageSize: q.pageSize });
   });
 
   // GET /api/v1/findings/by-user
   app.get('/api/v1/findings/by-user', async (req, reply) => {
     const q = z
       .object({
-        limit: z.coerce.number().int().min(1).max(1000).default(200),
+        page: z.coerce.number().int().min(1).default(1),
+        pageSize: z.coerce.number().int().min(1).max(500).default(50),
+        // backward compat: se cliente antigo manda limit, usa como pageSize
+        limit: z.coerce.number().int().min(1).max(1000).optional(),
         source: z
           .string()
           .optional()
@@ -158,6 +182,34 @@ export async function registerFindingsRoutes(
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const havingClause = q.onlyDirect
+      ? 'HAVING COUNT(DISTINCT CASE WHEN em.via_group IS NULL THEN em.machine_id END) > 0'
+      : '';
+    const pageSize = q.limit ?? q.pageSize;
+    const offset = (q.page - 1) * pageSize;
+
+    // Conta total (para paginação)
+    const totalRows = await deps.db.db.execute(sql`
+      WITH latest_scan AS (
+        SELECT DISTINCT ON (machine_id) machine_id, id
+        FROM scan_runs
+        WHERE expansion_status = 'done'
+        ORDER BY machine_id, collected_at DESC
+      ),
+      grouped AS (
+        SELECT em.sid
+        FROM effective_members em
+        JOIN latest_scan ls ON ls.id = em.scan_run_id
+        LEFT JOIN ad_users au ON au.sid = em.sid
+        ${sql.raw(whereClause)}
+        GROUP BY em.sid, au.display_name, em.name, au.sam_account_name, au.user_principal_name,
+                 au.email, au.department, au.title, au.enabled, au.is_service_account, au.last_logon,
+                 em.source
+        ${sql.raw(havingClause)}
+      )
+      SELECT COUNT(*)::int AS total FROM grouped;
+    `);
+    const total = (totalRows.rows[0] as { total: number } | undefined)?.total ?? 0;
 
     const rows = await deps.db.db.execute(sql`
       WITH latest_scan AS (
@@ -191,12 +243,13 @@ export async function registerFindingsRoutes(
       GROUP BY em.sid, au.display_name, em.name, au.sam_account_name, au.user_principal_name,
                au.email, au.department, au.title, au.enabled, au.is_service_account, au.last_logon,
                em.source
-      ${sql.raw(q.onlyDirect ? 'HAVING COUNT(DISTINCT CASE WHEN em.via_group IS NULL THEN em.machine_id END) > 0' : '')}
+      ${sql.raw(havingClause)}
       ORDER BY machine_count DESC, name ASC
-      LIMIT ${q.limit};
+      LIMIT ${pageSize}
+      OFFSET ${offset};
     `);
 
-    reply.send({ items: rows.rows });
+    reply.send({ items: rows.rows, total, page: q.page, pageSize });
   });
 
   // GET /api/v1/findings/users/:sid/machines — drill-down: máquinas onde este SID é admin
@@ -234,9 +287,26 @@ export async function registerFindingsRoutes(
   app.get('/api/v1/findings/by-group', async (req, reply) => {
     const q = z
       .object({
-        limit: z.coerce.number().int().min(1).max(500).default(50),
+        page: z.coerce.number().int().min(1).default(1),
+        pageSize: z.coerce.number().int().min(1).max(500).default(50),
       })
       .parse(req.query);
+
+    const offset = (q.page - 1) * q.pageSize;
+
+    const totalRow = await deps.db.db.execute(sql`
+      WITH latest_scan AS (
+        SELECT DISTINCT ON (machine_id) machine_id, id
+        FROM scan_runs
+        WHERE expansion_status = 'done'
+        ORDER BY machine_id, collected_at DESC
+      )
+      SELECT COUNT(DISTINCT em.via_group)::int AS total
+      FROM effective_members em
+      JOIN latest_scan ls ON ls.id = em.scan_run_id
+      WHERE em.via_group IS NOT NULL;
+    `);
+    const total = (totalRow.rows[0] as { total: number } | undefined)?.total ?? 0;
 
     const rows = await deps.db.db.execute(sql`
       WITH latest_scan AS (
@@ -254,10 +324,11 @@ export async function registerFindingsRoutes(
       WHERE em.via_group IS NOT NULL
       GROUP BY em.via_group, em.via_group_sid
       ORDER BY machine_count DESC
-      LIMIT ${q.limit};
+      LIMIT ${q.pageSize}
+      OFFSET ${offset};
     `);
 
-    reply.send({ items: rows.rows });
+    reply.send({ items: rows.rows, total, page: q.page, pageSize: q.pageSize });
   });
 }
 

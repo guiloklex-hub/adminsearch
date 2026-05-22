@@ -186,6 +186,7 @@ export class Enricher {
         source,
         hasMatchedException: !!exc,
         adUser: cached,
+        viaGroup: null, // direct user — sempre null para members diretos
       });
 
       drafts.push(draft);
@@ -264,6 +265,7 @@ export class Enricher {
             source,
             hasMatchedException: !!exc,
             adUser: cached,
+            viaGroup: expanded.groupCn, // user veio da expansao de grupo
           }),
           matchedExceptionId: exc?.id ?? null,
         });
