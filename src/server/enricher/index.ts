@@ -1,6 +1,12 @@
 import { and, asc, desc, eq, lt, ne, sql } from 'drizzle-orm';
 import type { DbClient } from '@server/db/client.ts';
-import { effectiveMembers, findingsEvents, rawMembers, scanRuns } from '@server/db/schema.ts';
+import {
+  effectiveMembers,
+  findingsEvents,
+  machines,
+  rawMembers,
+  scanRuns,
+} from '@server/db/schema.ts';
 import { AdUserCache } from '@server/enricher/ad-user-cache.ts';
 import { expandGroupBySid } from '@server/enricher/expand-group.ts';
 import { findMatchingException } from '@server/enricher/exception-matcher.ts';
@@ -118,6 +124,14 @@ export class Enricher {
   }
 
   private async expand(scanId: string, machineId: string): Promise<void> {
+    // 0. Hostname/NetBIOS da máquina — usado para distinguir LOCAL_USER de AD_USER
+    //    pelo prefixo "DOMAIN\X" do nome reportado pelo agente.
+    const machineRow = await this.deps.db.db.query.machines.findFirst({
+      where: eq(machines.id, machineId),
+      columns: { netBiosName: true, dnsHostName: true },
+    });
+    const netBios = (machineRow?.netBiosName ?? '').toLowerCase();
+
     // 1. Raw members
     const raw = await this.deps.db.db
       .select()
@@ -127,25 +141,26 @@ export class Enricher {
     // 2. Para cada grupo AD, expandir
     const drafts: EffectiveDraft[] = [];
 
-    const directUserSids: string[] = [];
+    const directUserHints: Array<{ sid: string; samAccountName?: string | null }> = [];
     const groupSids: string[] = [];
 
     for (const r of raw) {
       if (r.objectClass === 'Group') groupSids.push(r.sid);
-      else if (r.objectClass === 'User') directUserSids.push(r.sid);
-      else directUserSids.push(r.sid); // Unknown — tentamos resolver como user
+      else if (isDomainOrLocalAccountSid(r.sid)) {
+        // Extrai sAMAccountName do nome "DOMAIN\X" (X) ou "X" puro.
+        const sam = extractSam(r.name);
+        directUserHints.push({ sid: r.sid, samAccountName: sam });
+      }
     }
 
-    // Direct users — enriquece com cache
-    const directAdUsers = await this.cache.getMany(
-      directUserSids.filter(isDomainOrLocalAccountSid),
-    );
+    // Direct users — enriquece com cache (com fallback por sAMAccountName)
+    const directAdUsers = await this.cache.getManyWithHints(directUserHints);
 
     for (const r of raw) {
       if (r.objectClass === 'Group') continue;
 
       const cached = directAdUsers.get(r.sid) ?? null;
-      const source = this.classifySource(r.sid, r.resolved, !!cached);
+      const source = this.classifySource(r.sid, r.resolved, !!cached, r.name, netBios);
       const draft: EffectiveDraft = {
         sid: r.sid,
         name: cached?.displayName ?? cached?.samAccountName ?? r.name ?? null,
@@ -221,8 +236,9 @@ export class Enricher {
         continue;
       }
 
-      const userSids = expanded.users.map((u) => u.sid);
-      const cachedMap = await this.cache.getMany(userSids);
+      const cachedMap = await this.cache.getManyWithHints(
+        expanded.users.map((u) => ({ sid: u.sid, samAccountName: u.samAccountName })),
+      );
 
       for (const u of expanded.users) {
         const cached = cachedMap.get(u.sid) ?? null;
@@ -276,13 +292,35 @@ export class Enricher {
     await this.generateDiff(machineId, scanId, drafts);
   }
 
-  private classifySource(sid: string, resolved: boolean, hasAd: boolean): MemberSource {
+  private classifySource(
+    sid: string,
+    resolved: boolean,
+    hasAd: boolean,
+    rawName: string | null,
+    netBiosLower: string,
+  ): MemberSource {
     if (isWellKnownSid(sid)) return 'WELL_KNOWN';
     if (hasAd) return 'AD_USER';
     if (!resolved) return 'ORPHAN_SID';
+
+    // Heuristica por prefixo DOMAIN\X: se o DOMAIN do nome reportado é
+    // diferente do NetBIOS da máquina (e não é built-in/NT AUTHORITY), o
+    // member vem do AD — só que o enricher não conseguiu enriquecer pelo
+    // LDAP. Mesmo assim, é AD_USER (não LOCAL).
+    const name = rawName ?? '';
+    if (name.includes('\\')) {
+      const domainPart = (name.split('\\')[0] ?? '').toLowerCase();
+      const isBuiltin =
+        domainPart === 'builtin' ||
+        domainPart === 'nt authority' ||
+        domainPart === 'nt service' ||
+        domainPart === '';
+      if (!isBuiltin && netBiosLower && domainPart !== netBiosLower) {
+        return 'AD_USER';
+      }
+    }
+
     if (isDomainOrLocalAccountSid(sid)) {
-      // SID de domínio que não casou no AD — provavelmente conta local da própria
-      // máquina (com authority 21 idêntica ao computer).
       return 'LOCAL_USER';
     }
     return 'LOCAL_USER';
@@ -395,4 +433,15 @@ export class Enricher {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Extrai o sAMAccountName de um nome no formato "DOMAIN\sam" ou "sam".
+ * Retorna null se vazio.
+ */
+function extractSam(name: string | null): string | null {
+  if (!name) return null;
+  const last = name.includes('\\') ? (name.split('\\').pop() ?? '') : name;
+  const trimmed = last.trim();
+  return trimmed === '' ? null : trimmed;
 }
