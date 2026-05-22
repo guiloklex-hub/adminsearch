@@ -87,12 +87,29 @@ export class LdapPool {
   ): Promise<T[]> {
     const client = await this.getClient();
     try {
-      const { searchEntries } = await client.search(this.cfg.baseDn, {
+      const { searchEntries, searchReferences } = await client.search(this.cfg.baseDn, {
         filter,
         attributes,
         scope: options?.scope ?? 'sub',
         sizeLimit: options?.sizeLimit ?? 0,
+        // Garante que atributos binários (objectSid, objectGUID) venham
+        // como Buffer ao invés de string base64.
+        explicitBufferAttributes: ['objectSid', 'objectGUID'],
       });
+
+      // Log diagnóstico — extremamente útil pra debugar permissões e bugs do
+      // ldapts. Truncamos o filter pra não estourar log com SIDs binários.
+      const filterShort = filter.length > 200 ? `${filter.slice(0, 200)}...` : filter;
+      this.logger.debug(
+        {
+          filter: filterShort,
+          attributes,
+          entries: searchEntries.length,
+          refs: searchReferences?.length ?? 0,
+        },
+        'ldap search',
+      );
+
       return searchEntries as unknown as T[];
     } catch (err) {
       // Reconecta na próxima chamada
