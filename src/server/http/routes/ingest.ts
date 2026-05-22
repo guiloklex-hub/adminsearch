@@ -3,12 +3,13 @@ import type { FastifyInstance } from 'fastify';
 import type { DbClient } from '@server/db/client.ts';
 import { rawMembers, scanRuns } from '@server/db/schema.ts';
 import { identifyMachine } from '@server/ingest/identify-machine.ts';
+import { dispatch } from '@server/remediation/dispatch.ts';
 import { timingSafeEquals } from '@server/utils/timing-safe.ts';
 import { IngestPayloadSchema } from '@shared/ingest-contract.ts';
 
 export async function registerIngestRoute(
   app: FastifyInstance,
-  deps: { db: DbClient; ingestToken: string },
+  deps: { db: DbClient; ingestToken: string; remediationMaxPerDispatch: number },
 ): Promise<void> {
   app.post(
     '/api/v1/ingest',
@@ -28,7 +29,7 @@ export async function registerIngestRoute(
       // 2. Validação Zod
       const payload = IngestPayloadSchema.parse(req.body);
 
-      // 3. Idempotência por scanId
+      // 3. Idempotência por scanId — duplicata não dispara ações
       const existing = await deps.db.db.query.scanRuns.findFirst({
         where: eq(scanRuns.id, payload.scanId),
       });
@@ -37,6 +38,7 @@ export async function registerIngestRoute(
           duplicate: true,
           scanId: payload.scanId,
           machineId: existing.machineId,
+          actions: [],
         });
         return;
       }
@@ -76,6 +78,16 @@ export async function registerIngestRoute(
         }
       });
 
+      // 5. Despachar ações de remediação confirmadas para esta máquina
+      const actions = await dispatch(
+        { db: deps.db },
+        {
+          machineId: identified.id,
+          scanId: payload.scanId,
+          maxPerDispatch: deps.remediationMaxPerDispatch,
+        },
+      );
+
       req.log.info(
         {
           scanId: payload.scanId,
@@ -84,6 +96,7 @@ export async function registerIngestRoute(
           members: payload.members.length,
           created: identified.created,
           renamed: identified.renamed,
+          dispatchedActions: actions.length,
         },
         'scan recebido',
       );
@@ -93,6 +106,7 @@ export async function registerIngestRoute(
         machineId: identified.id,
         created: identified.created,
         renamed: identified.renamed,
+        actions,
       });
     },
   );

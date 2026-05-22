@@ -1,6 +1,6 @@
 {
   "name": "adminsearch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Inventário de admins locais do parque Windows — coleta via PowerShell + ScreenConnect, expansão AD/LDAP, relatórios BI.",
   "license": "MIT",

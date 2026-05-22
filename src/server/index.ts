@@ -59,6 +59,8 @@ async function main(): Promise<void> {
     jwtSecret: env.JWT_SECRET,
     ingestToken: env.INGEST_TOKEN,
     staleAgentDays: env.STALE_AGENT_DAYS,
+    remediationMaxPerDispatch: env.REMEDIATION_MAX_PER_DISPATCH,
+    remediationPlanRatePerMin: env.REMEDIATION_PLAN_RATE_PER_MIN,
     cookieSecure: env.COOKIE_SECURE,
     cookieDomain: env.COOKIE_DOMAIN,
   });

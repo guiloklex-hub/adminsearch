@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '@web/lib/api.ts';
+import { RemediationModal, type RemediationTarget } from './RemediationModal.tsx';
 import { SeverityBadge } from './SeverityBadge.tsx';
 import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 
@@ -61,6 +62,7 @@ export function MachineDetail({ id, onBack }: { id: string; onBack: () => void }
 
   const [tagsInput, setTagsInput] = useState('');
   const [notes, setNotes] = useState('');
+  const [removeTarget, setRemoveTarget] = useState<RemediationTarget | null>(null);
   const initialized = data?.machine.id === id;
 
   if (initialized && data && tagsInput === '' && notes === '') {
@@ -189,23 +191,56 @@ export function MachineDetail({ id, onBack }: { id: string; onBack: () => void }
               <th style={thStyle}>Habilitada AD</th>
               <th style={thStyle}>Severidade</th>
               <th style={thStyle}>SID</th>
+              <th style={thStyle} />
             </tr>
           </thead>
           <tbody>
-            {data.admins.map((a) => (
-              <tr key={`${a.sid}-${a.viaGroup ?? 'direct'}`}>
-                <td style={tdStyle}>{a.name ?? '—'}</td>
-                <td style={tdStyle}>{a.source}</td>
-                <td style={tdStyle}>{a.viaGroup ?? '— (direto)'}</td>
-                <td style={tdStyle}>
-                  {a.adEnabled === null ? '—' : a.adEnabled ? 'sim' : 'NÃO'}
-                </td>
-                <td style={tdStyle}>
-                  <SeverityBadge value={a.severity} />
-                </td>
-                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11 }}>{a.sid}</td>
-              </tr>
-            ))}
+            {data.admins.map((a) => {
+              const canRemediate =
+                ['critical', 'high', 'medium'].includes(a.severity) && a.source !== 'WELL_KNOWN';
+              return (
+                <tr key={`${a.sid}-${a.viaGroup ?? 'direct'}`}>
+                  <td style={tdStyle}>{a.name ?? '—'}</td>
+                  <td style={tdStyle}>{a.source}</td>
+                  <td style={tdStyle}>{a.viaGroup ?? '— (direto)'}</td>
+                  <td style={tdStyle}>
+                    {a.adEnabled === null ? '—' : a.adEnabled ? 'sim' : 'NÃO'}
+                  </td>
+                  <td style={tdStyle}>
+                    <SeverityBadge value={a.severity} />
+                  </td>
+                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11 }}>{a.sid}</td>
+                  <td style={tdStyle}>
+                    {canRemediate && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRemoveTarget({
+                            machineId: id,
+                            hostName: m.dnsHostName,
+                            sid: a.sid,
+                            name: a.name,
+                            severity: a.severity,
+                            source: a.source,
+                            viaGroup: a.viaGroup,
+                          })
+                        }
+                        style={{
+                          padding: '2px 8px',
+                          background: 'transparent',
+                          border: '1px solid var(--color-border)',
+                          color: 'var(--color-critical)',
+                          borderRadius: 4,
+                          fontSize: 11,
+                        }}
+                      >
+                        Remover
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </Panel>
@@ -268,6 +303,12 @@ export function MachineDetail({ id, onBack }: { id: string; onBack: () => void }
           </tbody>
         </table>
       </Panel>
+
+      <RemediationModal
+        target={removeTarget}
+        onClose={() => setRemoveTarget(null)}
+        onPlanned={() => setRemoveTarget(null)}
+      />
     </div>
   );
 }

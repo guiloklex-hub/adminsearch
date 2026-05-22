@@ -31,6 +31,9 @@ const envSchema = z.object({
   AD_USER_CACHE_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(24),
   ENRICHER_POLL_MS: z.coerce.number().int().min(1000).max(60_000).default(5000),
 
+  REMEDIATION_MAX_PER_DISPATCH: z.coerce.number().int().min(1).max(50).default(10),
+  REMEDIATION_PLAN_RATE_PER_MIN: z.coerce.number().int().min(1).max(500).default(20),
+
   COOKIE_SECURE: z
     .union([z.boolean(), z.string()])
     .transform((v) => (typeof v === 'string' ? v.toLowerCase() === 'true' : v))

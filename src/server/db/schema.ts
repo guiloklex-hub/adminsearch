@@ -230,6 +230,49 @@ export const auditLog = pgTable(
   }),
 );
 
+/* ---------- Remediation actions (remoção do Administrators local) ---------- */
+
+export const remediationActions = pgTable(
+  'remediation_actions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    machineId: uuid('machine_id')
+      .notNull()
+      .references(() => machines.id, { onDelete: 'cascade' }),
+
+    targetSid: text('target_sid').notNull(),
+    targetName: text('target_name'),
+    targetSource: text('target_source'), // AD_USER | LOCAL_USER | ORPHAN_SID
+    targetIsGroup: boolean('target_is_group').notNull().default(false),
+    viaGroup: text('via_group'),
+
+    status: text('status').notNull().default('planned'),
+    // planned | confirmed | cancelled | dispatched | executed | failed | refused
+
+    plannedBy: text('planned_by').notNull(),
+    plannedAt: timestamp('planned_at', { withTimezone: true }).notNull().defaultNow(),
+    plannedReason: text('planned_reason'),
+
+    confirmedBy: text('confirmed_by'),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+
+    cancelledBy: text('cancelled_by'),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    cancelReason: text('cancel_reason'),
+
+    dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+    dispatchedScanId: uuid('dispatched_scan_id'),
+    executedAt: timestamp('executed_at', { withTimezone: true }),
+    executionResult: text('execution_result'),
+    executionError: text('execution_error'),
+  },
+  (t) => ({
+    statusIdx: index('remediation_actions_status_idx').on(t.status),
+    machineStatusIdx: index('remediation_actions_machine_status_idx').on(t.machineId, t.status),
+    plannedAtIdx: index('remediation_actions_planned_at_idx').on(t.plannedAt.desc()),
+  }),
+);
+
 /* ---------- Tipos auxiliares ---------- */
 
 export type Machine = typeof machines.$inferSelect;
@@ -244,3 +287,5 @@ export type AdUser = typeof adUsers.$inferSelect;
 export type FindingsEvent = typeof findingsEvents.$inferSelect;
 export type Exception = typeof exceptions.$inferSelect;
 export type Admin = typeof admins.$inferSelect;
+export type RemediationAction = typeof remediationActions.$inferSelect;
+export type NewRemediationAction = typeof remediationActions.$inferInsert;

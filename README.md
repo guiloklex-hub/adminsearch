@@ -66,13 +66,15 @@ Para desfazer em uma máquina: `.\Get-LocalAdmins.ps1 -IngestUrl <x> -IngestToke
 | `findings_events` | diff `ADMIN_ADDED` / `ADMIN_REMOVED` / `ORPHAN_DETECTED` / `MACHINE_RENAMED` |
 | `exceptions` | whitelist (escopo global / por máquina / por tag) |
 | `admins` | single-admin local da Web UI (argon2id) |
-| `audit_log` | login, exceções, change-password |
+| `audit_log` | login, exceções, change-password, remediação |
+| `remediation_actions` | ações de remoção do Administrators local (planned → confirmed → dispatched → executed) |
 
 ## API principal
 
 | Método | Rota | Auth |
 |---|---|---|
 | POST | `/api/v1/ingest` | Bearer `INGEST_TOKEN` |
+| POST | `/api/v1/remediation/result` | Bearer `INGEST_TOKEN` |
 | POST | `/api/v1/auth/login` | público (rate-limited) |
 | GET  | `/api/v1/machines` | sessão |
 | GET  | `/api/v1/machines/:id` | sessão |
@@ -85,6 +87,10 @@ Para desfazer em uma máquina: `.\Get-LocalAdmins.ps1 -IngestUrl <x> -IngestToke
 | GET / POST / DELETE | `/api/v1/exceptions[/:id]` | sessão |
 | GET  | `/api/v1/export/findings.csv` | sessão |
 | POST | `/api/v1/ad/test` | sessão |
+| GET  | `/api/v1/remediation` | sessão |
+| POST | `/api/v1/remediation/plan` | sessão |
+| POST | `/api/v1/remediation/:id/confirm` | sessão |
+| POST | `/api/v1/remediation/:id/cancel` | sessão |
 | GET  | `/healthz` | público |
 
 Contrato Zod compartilhado entre PS↔servidor: [`src/shared/ingest-contract.ts`](src/shared/ingest-contract.ts).
@@ -162,8 +168,30 @@ adminsearch/
 └── .env.example
 ```
 
+## Remediação ativa (v0.2.0)
+
+A partir da v0.2.0 é possível **remover** um usuário do grupo `Administrators` local de uma máquina diretamente pela Web UI:
+
+1. Em `/findings` ou no detalhe da máquina, clique **Remover** no achado.
+2. Preencha o motivo (opcional, registrado em audit log) e marque a confirmação. A ação fica em **Planejada**.
+3. Em `/remediation` revise e clique **Confirmar**. A ordem fica como `confirmed` aguardando o agente.
+4. No próximo phone-home da Scheduled Task (ou disparo manual via ScreenConnect), o agente recebe a ordem no response do `/ingest`, executa `Remove-LocalGroupMember` e devolve o resultado em `/api/v1/remediation/result`.
+5. Status final aparece no histórico (`executed`, `failed`, `refused_*` ou `cancelled`).
+
+**Travas implícitas** (sem configuração — defaults seguros):
+
+- SIDs well-known (BUILTIN\\Administrator, Domain Admins, Enterprise Admins, etc.) nunca são removidos — servidor e agente recusam.
+- Usuários cobertos por uma `exception` ativa não podem ser planejados.
+- O agente faz double-check local: se a remoção esvaziaria o grupo de admins AD, recusa (`refused_last_admin`).
+- Pipeline de duas etapas (planned → confirmed) evita remoção acidental.
+- Apenas **N ações por scan** (default `REMEDIATION_MAX_PER_DISPATCH=10`) — limita raio de impacto.
+- Rate limit na criação de plans (`REMEDIATION_PLAN_RATE_PER_MIN=20`).
+
+**Como acelerar a execução**: se você não quer esperar a Scheduled Task diária, dispare o agente via ScreenConnect com `-Source manual` ou execute `schtasks /run /tn MM-AdminSearch-Daily` na máquina.
+
 ## Histórico de versões
 
 | Versão | Data | Notas |
 |---|---|---|
+| 0.2.0 | 2026-05-22 | Remediação ativa — remover usuários do Administrators local via Web UI com fluxo planned → confirmed → executed. |
 | 0.1.0 | 2026-05-22 | Primeira versão — ingestão, enricher LDAP, BI, exportação CSV. |

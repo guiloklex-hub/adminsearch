@@ -6,6 +6,7 @@ import { Layout, type Route } from './components/Layout.tsx';
 import { LoginPage } from './components/LoginPage.tsx';
 import { MachineDetail } from './components/MachineDetail.tsx';
 import { MachinesPage } from './components/MachinesPage.tsx';
+import { RemediationPage } from './components/RemediationPage.tsx';
 import { SettingsPage } from './components/SettingsPage.tsx';
 import { ApiError, api } from './lib/api.ts';
 
@@ -92,6 +93,7 @@ export function App() {
       )}
       {route === 'findings' && <FindingsPage />}
       {route === 'events' && <EventsPage />}
+      {route === 'remediation' && <RemediationPage />}
       {route === 'settings' && <SettingsPage />}
     </Layout>
   );

@@ -18,6 +18,10 @@ import { registerFindingsRoutes } from '@server/http/routes/findings.ts';
 import { registerHealthz } from '@server/http/routes/healthz.ts';
 import { registerIngestRoute } from '@server/http/routes/ingest.ts';
 import { registerMachinesRoutes } from '@server/http/routes/machines.ts';
+import {
+  registerRemediationResultRoute,
+  registerRemediationRoutes,
+} from '@server/http/routes/remediation.ts';
 import { registerStatsRoutes } from '@server/http/routes/stats.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +33,8 @@ export interface BuildAppOptions {
   jwtSecret: string;
   ingestToken: string;
   staleAgentDays: number;
+  remediationMaxPerDispatch: number;
+  remediationPlanRatePerMin: number;
   cookieSecure: boolean;
   cookieDomain?: string | undefined;
   staticDir?: string;
@@ -68,12 +74,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     cookieSecure: opts.cookieSecure,
     cookieDomain: opts.cookieDomain,
   });
-  await registerIngestRoute(app, { db: opts.db, ingestToken: opts.ingestToken });
+  await registerIngestRoute(app, {
+    db: opts.db,
+    ingestToken: opts.ingestToken,
+    remediationMaxPerDispatch: opts.remediationMaxPerDispatch,
+  });
+  await registerRemediationResultRoute(app, { db: opts.db, ingestToken: opts.ingestToken });
 
   // Rotas autenticadas — encapsuladas em scope próprio porque adicionam
   // preHandler global de sessão.
   await app.register(async (scope) => {
     await registerMachinesRoutes(scope, { db: opts.db });
+  });
+  await app.register(async (scope) => {
+    await registerRemediationRoutes(scope, {
+      db: opts.db,
+      planRatePerMin: opts.remediationPlanRatePerMin,
+    });
   });
   await app.register(async (scope) => {
     await registerFindingsRoutes(scope, { db: opts.db });

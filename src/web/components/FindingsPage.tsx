@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, buildQuery } from '@web/lib/api.ts';
+import { RemediationModal, type RemediationTarget } from './RemediationModal.tsx';
 import { SeverityBadge } from './SeverityBadge.tsx';
 import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 
@@ -103,6 +104,8 @@ function FindingsByMachine(props: {
 }) {
   const { q, setQ, severity, setSeverity, source, setSource, hideExceptions, setHideExceptions, onlyOrphans, setOnlyOrphans } = props;
 
+  const [removeTarget, setRemoveTarget] = useState<RemediationTarget | null>(null);
+
   const { data, isLoading } = useQuery({
     queryKey: ['findings', { q, severity, source, hideExceptions, onlyOrphans }],
     queryFn: () =>
@@ -187,27 +190,62 @@ function FindingsByMachine(props: {
                 <th style={thStyle}>AD habilitado</th>
                 <th style={thStyle}>Severidade</th>
                 <th style={thStyle}>SID</th>
+                <th style={thStyle} />
               </tr>
             </thead>
             <tbody>
-              {data?.items.map((it) => (
-                <tr key={it.id}>
-                  <td style={tdStyle}>{it.hostName}</td>
-                  <td style={tdStyle}>{it.name ?? '—'}</td>
-                  <td style={tdStyle}>{it.source}</td>
-                  <td style={tdStyle}>{it.viaGroup ?? '—'}</td>
-                  <td style={tdStyle}>
-                    {it.adEnabled === null ? '—' : it.adEnabled ? 'sim' : 'NÃO'}
-                  </td>
-                  <td style={tdStyle}>
-                    <SeverityBadge value={it.severity} />
-                  </td>
-                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11 }}>{it.sid}</td>
-                </tr>
-              ))}
+              {data?.items.map((it) => {
+                const canRemediate =
+                  !it.matchedExceptionId &&
+                  ['critical', 'high', 'medium'].includes(it.severity) &&
+                  it.source !== 'WELL_KNOWN';
+                return (
+                  <tr key={it.id}>
+                    <td style={tdStyle}>{it.hostName}</td>
+                    <td style={tdStyle}>{it.name ?? '—'}</td>
+                    <td style={tdStyle}>{it.source}</td>
+                    <td style={tdStyle}>{it.viaGroup ?? '—'}</td>
+                    <td style={tdStyle}>
+                      {it.adEnabled === null ? '—' : it.adEnabled ? 'sim' : 'NÃO'}
+                    </td>
+                    <td style={tdStyle}>
+                      <SeverityBadge value={it.severity} />
+                    </td>
+                    <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11 }}>{it.sid}</td>
+                    <td style={tdStyle}>
+                      {canRemediate && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRemoveTarget({
+                              machineId: it.machineId,
+                              hostName: it.hostName,
+                              sid: it.sid,
+                              name: it.name,
+                              severity: it.severity,
+                              source: it.source,
+                              viaGroup: it.viaGroup,
+                            })
+                          }
+                          style={{
+                            padding: '2px 8px',
+                            background: 'transparent',
+                            border: '1px solid var(--color-border)',
+                            color: 'var(--color-critical)',
+                            borderRadius: 4,
+                            fontSize: 11,
+                          }}
+                        >
+                          Remover
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
               {data && data.items.length === 0 && (
                 <tr>
-                  <td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}>
+                  <td colSpan={8} style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}>
                     Nenhum achado.
                   </td>
                 </tr>
@@ -216,6 +254,12 @@ function FindingsByMachine(props: {
           </table>
         )}
       </div>
+
+      <RemediationModal
+        target={removeTarget}
+        onClose={() => setRemoveTarget(null)}
+        onPlanned={() => setRemoveTarget(null)}
+      />
     </div>
   );
 }

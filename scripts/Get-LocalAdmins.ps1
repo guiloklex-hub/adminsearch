@@ -48,7 +48,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$AgentVersion = '1.0.0'
+$AgentVersion = '1.1.0'
+
+# Endpoint derivado para resultados de remediacao (mesma origem do IngestUrl)
+$RemediationResultUrl = $IngestUrl -replace '/ingest$', '/remediation/result'
 
 # ============================================================
 # 1. Verificacao de Administrador
@@ -325,7 +328,113 @@ function Get-LocalAdminMembers {
 }
 
 # ============================================================
-# 8. Monta payload e envia
+# 8a. Remediacao — executar acoes recebidas do servidor
+# ============================================================
+function Test-WellKnownSid {
+    param([string]$Sid)
+    # Authoritys / prefixos hard-coded — cinto e suspensorio do servidor
+    if ($Sid -like 'S-1-5-32-*') { return $true }   # BUILTIN
+    if ($Sid -eq 'S-1-5-18')     { return $true }   # SYSTEM
+    if ($Sid -eq 'S-1-5-19')     { return $true }   # LOCAL SERVICE
+    if ($Sid -eq 'S-1-5-20')     { return $true }   # NETWORK SERVICE
+    if ($Sid -eq 'S-1-5-4')      { return $true }   # INTERACTIVE
+    if ($Sid -eq 'S-1-5-11')     { return $true }   # Authenticated Users
+    # RIDs perigosos no dominio
+    if ($Sid -match '^S-1-5-21-\d+-\d+-\d+-(500|512|518|519)$') { return $true }
+    return $false
+}
+
+function Invoke-Remediation {
+    param(
+        [Parameter(Mandatory)] $Action,
+        [Parameter(Mandatory)] $CurrentMembers
+    )
+
+    $nowIso = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    $base = @{
+        actionId    = $Action.id
+        collectedAt = $nowIso
+        error       = $null
+    }
+
+    # Trava 1 — recusar SIDs well-known
+    if (Test-WellKnownSid -Sid $Action.targetSid) {
+        Write-Log "Acao $($Action.id) recusada (well-known $($Action.targetSid))" 'WARN'
+        return $base + @{ result = 'refused_well_known'; error = "SID well-known: $($Action.targetSid)" }
+    }
+
+    # Trava 2 — nao esvaziar o grupo
+    $survivors = $CurrentMembers | Where-Object {
+        $_.sid -ne $Action.targetSid -and -not (Test-WellKnownSid -Sid $_.sid)
+    }
+    if (-not $survivors -or $survivors.Count -eq 0) {
+        Write-Log "Acao $($Action.id) recusada (esvaziaria o grupo)" 'WARN'
+        return $base + @{ result = 'refused_last_admin'; error = 'Remocao esvaziaria o grupo Administrators local' }
+    }
+
+    # SID esta mesmo no grupo?
+    $present = $CurrentMembers | Where-Object { $_.sid -eq $Action.targetSid } | Select-Object -First 1
+    if (-not $present) {
+        Write-Log "Acao $($Action.id) — SID $($Action.targetSid) ja nao esta no grupo" 'INFO'
+        return $base + @{ result = 'not_found'; error = 'SID nao encontrado no grupo' }
+    }
+
+    try {
+        $sidObj = New-Object System.Security.Principal.SecurityIdentifier($Action.targetSid)
+
+        # Caminho moderno (Win10+ / Server 2016+)
+        try {
+            Remove-LocalGroupMember -SID 'S-1-5-32-544' -Member $sidObj -ErrorAction Stop
+        } catch {
+            # Fallback ADSI — caminho legado, funciona em qualquer Windows ainda suportado
+            $group = [ADSI]"WinNT://./S-1-5-32-544,group"
+            $group.Remove("WinNT://$($Action.targetSid)")
+        }
+
+        Write-Log "Acao $($Action.id) executada: removido $($Action.targetSid) ($($Action.targetName))"
+        return $base + @{ result = 'success' }
+    } catch {
+        $msg = $_.Exception.Message
+        Write-Log "Acao $($Action.id) falhou: $msg" 'ERROR'
+        return $base + @{ result = 'error'; error = $msg }
+    }
+}
+
+function Send-ActionResults {
+    param(
+        [Parameter(Mandatory)][string]$ScanId,
+        [Parameter(Mandatory)]$Results
+    )
+
+    $body = @{ scanId = $ScanId; results = $Results } | ConvertTo-Json -Depth 4 -Compress
+
+    $maxAttempts = 3
+    $delays = @(0, 5, 30)
+
+    for ($i = 0; $i -lt $maxAttempts; $i++) {
+        if ($delays[$i] -gt 0) { Start-Sleep -Seconds $delays[$i] }
+        try {
+            $resp = Invoke-RestMethod -Method POST -Uri $RemediationResultUrl `
+                -Headers @{ Authorization = "Bearer $IngestToken" } `
+                -ContentType 'application/json; charset=utf-8' `
+                -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
+                -TimeoutSec 30
+            Write-Log "POST /remediation/result ok: applied=$($resp.applied) ignored=$($resp.ignored)"
+            return $resp
+        } catch {
+            $msg = $_.Exception.Message
+            Write-Log "Tentativa $($i+1)/$maxAttempts (results) falhou: $msg" 'WARN'
+            if ($i -eq $maxAttempts - 1) {
+                Write-Log "Falha definitiva ao postar resultados: $msg" 'ERROR'
+                # Nao re-lanca — perda de resultado nao trava a coleta
+                return $null
+            }
+        }
+    }
+}
+
+# ============================================================
+# 8b. Monta payload e envia
 # ============================================================
 function Send-Payload {
     param([Parameter(Mandatory)][PSCustomObject]$Payload)
@@ -376,7 +485,21 @@ try {
         members      = $members
     }
 
-    Send-Payload -Payload $payload | Out-Null
+    $resp = Send-Payload -Payload $payload
+
+    # Processa acoes de remediacao recebidas no response
+    if ($resp -and $resp.actions -and $resp.actions.Count -gt 0) {
+        Write-Log "Recebidas $($resp.actions.Count) acao(oes) de remediacao para esta maquina"
+        $results = @()
+        foreach ($action in $resp.actions) {
+            $r = Invoke-Remediation -Action $action -CurrentMembers $members
+            $results += $r
+        }
+        if ($results.Count -gt 0) {
+            Send-ActionResults -ScanId $payload.scanId -Results $results | Out-Null
+        }
+    }
+
     Write-Log "Coleta concluida com sucesso."
     exit 0
 } catch {

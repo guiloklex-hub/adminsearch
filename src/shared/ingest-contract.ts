@@ -46,3 +46,53 @@ export const IngestPayloadSchema = z.object({
   members: z.array(RawMemberSchema).max(500),
 });
 export type IngestPayload = z.infer<typeof IngestPayloadSchema>;
+
+/* ---------- Remediation: ações entregues no response do /ingest ---------- */
+
+export const ActionKindSchema = z.enum(['REMOVE_FROM_LOCAL_ADMINS']);
+export type ActionKind = z.infer<typeof ActionKindSchema>;
+
+export const ActionSchema = z.object({
+  id: z.string().uuid(),
+  kind: ActionKindSchema,
+  targetSid: z.string().regex(SID_REGEX),
+  targetName: z.string().max(512).nullable(),
+  targetIsGroup: z.boolean(),
+});
+export type ActionPayload = z.infer<typeof ActionSchema>;
+
+export const IngestResponseSchema = z.object({
+  scanId: z.string().uuid(),
+  machineId: z.string().uuid(),
+  duplicate: z.boolean().optional(),
+  created: z.boolean().optional(),
+  renamed: z.boolean().optional(),
+  actions: z.array(ActionSchema).max(50).default([]),
+});
+export type IngestResponse = z.infer<typeof IngestResponseSchema>;
+
+/* ---------- Remediation: resultado postado pelo agente após executar ---------- */
+
+export const ActionResultEnum = z.enum([
+  'success',
+  'refused_protected',
+  'refused_last_admin',
+  'refused_well_known',
+  'not_found',
+  'error',
+]);
+export type ActionResultKind = z.infer<typeof ActionResultEnum>;
+
+export const ActionResultSchema = z.object({
+  actionId: z.string().uuid(),
+  result: ActionResultEnum,
+  error: z.string().max(2000).nullable().optional(),
+  collectedAt: z.string().datetime({ offset: true }),
+});
+export type ActionResult = z.infer<typeof ActionResultSchema>;
+
+export const ActionResultPayloadSchema = z.object({
+  scanId: z.string().uuid(),
+  results: z.array(ActionResultSchema).max(50),
+});
+export type ActionResultPayload = z.infer<typeof ActionResultPayloadSchema>;

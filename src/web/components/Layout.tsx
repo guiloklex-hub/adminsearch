@@ -6,6 +6,7 @@ const NAV = [
   { id: 'machines', label: 'Máquinas' },
   { id: 'findings', label: 'Achados' },
   { id: 'events', label: 'Eventos' },
+  { id: 'remediation', label: 'A executar' },
   { id: 'settings', label: 'Configurações' },
 ] as const;
 
