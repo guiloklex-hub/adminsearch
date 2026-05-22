@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: adminsearch-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: adminsearch
+      POSTGRES_USER: adminsearch_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env (openssl rand -base64 32)}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - internal
+
+  adminsearch:
+    build: .
+    container_name: adminsearch
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - '3010:3010'
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3010
+      DATABASE_URL: postgresql://adminsearch_app:${POSTGRES_PASSWORD}@postgres:5432/adminsearch
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      JWT_SECRET: ${JWT_SECRET:?Defina JWT_SECRET no .env (openssl rand -base64 64)}
+      INGEST_TOKEN: ${INGEST_TOKEN:?Defina INGEST_TOKEN no .env (openssl rand -base64 32)}
+      LDAP_URL: ${LDAP_URL:-}
+      LDAP_BIND_DN: ${LDAP_BIND_DN:-}
+      LDAP_BIND_PASSWORD: ${LDAP_BIND_PASSWORD:-}
+      LDAP_BASE_DN: ${LDAP_BASE_DN:-}
+      LDAP_TLS_CA_FILE: ${LDAP_TLS_CA_FILE:-}
+      STALE_AGENT_DAYS: ${STALE_AGENT_DAYS:-7}
+      AD_USER_CACHE_TTL_HOURS: ${AD_USER_CACHE_TTL_HOURS:-24}
+      ENRICHER_POLL_MS: ${ENRICHER_POLL_MS:-5000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+    volumes:
+      - ./data:/app/data:Z
+      # Monte o CA do AD aqui se LDAP_TLS_CA_FILE estiver configurado.
+      # - ./mm-ca.crt:/etc/adminsearch/mm-ca.crt:ro
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3010/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - internal
+
+volumes:
+  pgdata:
+
+networks:
+  internal:

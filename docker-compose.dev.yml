@@ -1,0 +1,6 @@
+# Overlay para desenvolvimento — expõe Postgres no host para psql/Studio.
+# Uso: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+services:
+  postgres:
+    ports:
+      - '5432:5432'
