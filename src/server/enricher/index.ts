@@ -1,4 +1,3 @@
-import { and, asc, desc, eq, lt, ne, sql } from 'drizzle-orm';
 import type { DbClient } from '@server/db/client.ts';
 import {
   effectiveMembers,
@@ -8,16 +7,18 @@ import {
   scanRuns,
 } from '@server/db/schema.ts';
 import { AdUserCache } from '@server/enricher/ad-user-cache.ts';
-import { expandGroupBySid } from '@server/enricher/expand-group.ts';
 import { findMatchingException } from '@server/enricher/exception-matcher.ts';
-import { LdapPool } from '@server/enricher/ldap-client.ts';
+import { type ExpandedGroupResult, expandGroupBySid } from '@server/enricher/expand-group.ts';
+import type { LdapPool } from '@server/enricher/ldap-client.ts';
+import { type MemberSource, type Severity, classifySeverity } from '@server/enricher/severity.ts';
 import {
-  type MemberSource,
-  type Severity,
-  classifySeverity,
-} from '@server/enricher/severity.ts';
-import { isDomainOrLocalAccountSid, isWellKnownSid } from '@server/enricher/well-known.ts';
+  isDomainOrLocalAccountSid,
+  isExpandableWellKnownGroupSid,
+  isWellKnownSid,
+  wellKnownName,
+} from '@server/enricher/well-known.ts';
 import type { AppLogger } from '@server/logger.ts';
+import { and, asc, desc, eq, lt, ne, sql } from 'drizzle-orm';
 
 export interface EnricherDeps {
   db: DbClient;
@@ -138,32 +139,72 @@ export class Enricher {
       .from(rawMembers)
       .where(eq(rawMembers.scanRunId, scanId));
 
-    // 2. Para cada grupo AD, expandir
+    // 2. Particionar em grupos vs candidatos a user.
+    //    - objectClass='Group' do agente → grupo.
+    //    - RID built-in de grupo do dominio (Domain Admins, Enterprise Admins,
+    //      Schema Admins, etc) → grupo, MESMO que o agente PS tenha mandado
+    //      como User (Get-LocalGroupMember misclassifica em varios cenarios).
+    //    - resto → user candidate; ainda passa por backstop para detectar
+    //      grupo de dominio nao-built-in que o agente classificou errado.
     const drafts: EffectiveDraft[] = [];
 
-    const directUserHints: Array<{ sid: string; samAccountName?: string | null }> = [];
-    const groupSids: string[] = [];
+    const groupSids = new Set<string>();
+    const userCandidates: typeof raw = [];
 
     for (const r of raw) {
-      if (r.objectClass === 'Group') groupSids.push(r.sid);
-      else if (isDomainOrLocalAccountSid(r.sid)) {
-        // Extrai sAMAccountName do nome "DOMAIN\X" (X) ou "X" puro.
-        const sam = extractSam(r.name);
-        directUserHints.push({ sid: r.sid, samAccountName: sam });
+      if (r.objectClass === 'Group' || isExpandableWellKnownGroupSid(r.sid)) {
+        groupSids.add(r.sid);
+      } else {
+        userCandidates.push(r);
       }
     }
 
-    // Direct users — enriquece com cache (com fallback por sAMAccountName)
-    const directAdUsers = await this.cache.getManyWithHints(directUserHints);
+    // 3. Enriquecer users via cache LDAP (com fallback por sAMAccountName)
+    const userHints = userCandidates
+      .filter((u) => isDomainOrLocalAccountSid(u.sid))
+      .map((u) => ({ sid: u.sid, samAccountName: extractSam(u.name) }));
+    const directAdUsers = await this.cache.getManyWithHints(userHints);
 
-    for (const r of raw) {
-      if (r.objectClass === 'Group') continue;
+    // 4. Backstop: users de dominio que NAO casaram no cache LDAP podem ser
+    //    grupos mal-classificados pelo agente. Tentar expandir como grupo
+    //    antes de descer pra ORPHAN_SID. Caches o resultado para nao buscar
+    //    de novo na fase 6.
+    const preExpanded = new Map<string, ExpandedGroupResult>();
+    const stillUsers: typeof raw = [];
+    for (const r of userCandidates) {
+      const cached = directAdUsers.get(r.sid);
+      if (!cached && isDomainOrLocalAccountSid(r.sid) && !isWellKnownSid(r.sid)) {
+        const maybeGroup = await expandGroupBySid(
+          this.deps.ldap,
+          r.sid,
+          r.name ?? null,
+          this.deps.logger,
+        ).catch(() => null);
+        if (maybeGroup) {
+          this.deps.logger.info(
+            { sid: r.sid, agentClass: r.objectClass, groupCn: maybeGroup.groupCn },
+            'backstop: SID classificado pelo agente como nao-grupo casou como grupo no LDAP',
+          );
+          groupSids.add(r.sid);
+          preExpanded.set(r.sid, maybeGroup);
+          continue;
+        }
+      }
+      stillUsers.push(r);
+    }
 
+    // 5. Criar drafts de users diretos
+    for (const r of stillUsers) {
       const cached = directAdUsers.get(r.sid) ?? null;
       const source = this.classifySource(r.sid, r.resolved, !!cached, r.name, netBios);
+      const name =
+        cached?.displayName ??
+        cached?.samAccountName ??
+        cleanRawName(r.name) ??
+        wellKnownName(r.sid);
       const draft: EffectiveDraft = {
         sid: r.sid,
-        name: cached?.displayName ?? cached?.samAccountName ?? r.name ?? null,
+        name,
         source,
         viaGroup: null,
         viaGroupSid: null,
@@ -186,21 +227,24 @@ export class Enricher {
         source,
         hasMatchedException: !!exc,
         adUser: cached,
-        viaGroup: null, // direct user — sempre null para members diretos
+        viaGroup: null,
+        viaGroupSid: null,
       });
 
       drafts.push(draft);
     }
 
-    // Expansão de grupos AD
+    // 6. Expansão de grupos AD
     for (const groupSid of groupSids) {
       const rawGroup = raw.find((r) => r.sid === groupSid);
-      if (isWellKnownSid(groupSid)) {
-        // Grupos built-in BUILTIN\* não precisam expandir via LDAP — eles
-        // representam coletânea local; logamos o grupo direto.
+      const rawName = cleanRawName(rawGroup?.name ?? null);
+
+      // Built-in NAO expansivel (BUILTIN\*, NT AUTHORITY\*): so registra
+      // a entrada do grupo, sem expandir via LDAP.
+      if (isWellKnownSid(groupSid) && !isExpandableWellKnownGroupSid(groupSid)) {
         drafts.push({
           sid: groupSid,
-          name: rawGroup?.name ?? null,
+          name: rawName ?? wellKnownName(groupSid),
           source: 'WELL_KNOWN',
           viaGroup: null,
           viaGroupSid: null,
@@ -212,29 +256,60 @@ export class Enricher {
         continue;
       }
 
-      // Grupos do domínio: expandir, com fallback por sAMAccountName e cn
-      const expanded = await expandGroupBySid(
-        this.deps.ldap,
-        groupSid,
-        rawGroup?.name ?? null,
-        this.deps.logger,
-      ).catch((err) => {
-        this.deps.logger.warn({ err, groupSid }, 'falha ao expandir grupo');
-        return null;
-      });
+      // Grupos do dominio (incluindo built-in expansiveis): expandir via LDAP.
+      const expanded =
+        preExpanded.get(groupSid) ??
+        (await expandGroupBySid(
+          this.deps.ldap,
+          groupSid,
+          rawGroup?.name ?? null,
+          this.deps.logger,
+        ).catch((err) => {
+          this.deps.logger.warn({ err, groupSid }, 'falha ao expandir grupo');
+          return null;
+        }));
 
-      if (!expanded) {
+      // Entrada do GRUPO em si — mesmo expandindo, queremos registrar que o
+      // grupo aparece em Administrators local. Se for built-in do dominio
+      // (Domain Admins, Enterprise Admins...), e' WELL_KNOWN critical.
+      const isBuiltinDomain = isExpandableWellKnownGroupSid(groupSid);
+      if (isBuiltinDomain) {
         drafts.push({
           sid: groupSid,
-          name: rawGroup?.name ?? null,
-          source: 'ORPHAN_SID',
+          name: expanded?.groupCn ?? rawName ?? wellKnownName(groupSid),
+          source: 'WELL_KNOWN',
           viaGroup: null,
           viaGroupSid: null,
           adEnabled: null,
           isServiceAccount: false,
-          severity: 'critical',
+          severity: classifySeverity({
+            sid: groupSid,
+            source: 'WELL_KNOWN',
+            hasMatchedException: false,
+            adUser: null,
+            viaGroup: null,
+            viaGroupSid: null,
+          }),
           matchedExceptionId: null,
         });
+      }
+
+      if (!expanded) {
+        // Grupo nao built-in que falhou a expansao via LDAP. So registra
+        // se nao for built-in (esse caso ja registrou WELL_KNOWN acima).
+        if (!isBuiltinDomain) {
+          drafts.push({
+            sid: groupSid,
+            name: rawName,
+            source: 'ORPHAN_SID',
+            viaGroup: null,
+            viaGroupSid: null,
+            adEnabled: null,
+            isServiceAccount: false,
+            severity: 'critical',
+            matchedExceptionId: null,
+          });
+        }
         continue;
       }
 
@@ -265,7 +340,8 @@ export class Enricher {
             source,
             hasMatchedException: !!exc,
             adUser: cached,
-            viaGroup: expanded.groupCn, // user veio da expansao de grupo
+            viaGroup: expanded.groupCn,
+            viaGroupSid: expanded.groupSid,
           }),
           matchedExceptionId: exc?.id ?? null,
         });
@@ -443,8 +519,26 @@ function sleep(ms: number): Promise<void> {
  * Retorna null se vazio.
  */
 function extractSam(name: string | null): string | null {
-  if (!name) return null;
-  const last = name.includes('\\') ? (name.split('\\').pop() ?? '') : name;
+  const cleaned = cleanRawName(name);
+  if (!cleaned) return null;
+  const last = cleaned.includes('\\') ? (cleaned.split('\\').pop() ?? '') : cleaned;
   const trimmed = last.trim();
   return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * Sanitiza nomes vindos do agente PS: descarta valores degenerados que
+ * historicamente o `Get-LocalGroupMember` / `InvokeMember('Name', ...)`
+ * emitiu — "{}" (objeto COM sem propriedades enumeraveis), "[]", string
+ * vazia, ou o proprio SID quando a resolucao local falhou. Esses casos
+ * devem cair como `null` para o resto do pipeline tentar resolver via
+ * LDAP / `wellKnownName`.
+ */
+function cleanRawName(name: string | null | undefined): string | null {
+  if (name == null) return null;
+  const trimmed = String(name).trim();
+  if (trimmed === '') return null;
+  if (trimmed === '{}' || trimmed === '[]') return null;
+  if (/^S-\d+-\d+(-\d+)*$/.test(trimmed)) return null; // veio so o SID
+  return trimmed;
 }

@@ -17,10 +17,23 @@ const STATIC_WELL_KNOWN: Record<string, string> = {
   'S-1-5-11': 'NT AUTHORITY\\Authenticated Users',
 };
 
-/** RIDs do domínio que indicam contas/grupos sensíveis embutidos. */
-const DOMAIN_WELL_KNOWN_RIDS: Record<number, string> = {
+/**
+ * RIDs do domínio que indicam **contas** sensíveis built-in.
+ * (Administrator 500, Guest 501 — são users, não grupos)
+ */
+const DOMAIN_WELL_KNOWN_USER_RIDS: Record<number, string> = {
   500: 'Administrator (built-in)',
   501: 'Guest (built-in)',
+};
+
+/**
+ * RIDs do domínio que indicam **grupos** sensíveis built-in. Esses grupos
+ * existem no AD com membros reais — quando aparecem no Administrators local
+ * de uma máquina, **devem ser expandidos via LDAP** para listar os usuários
+ * que de fato ganham admin nessa máquina. Ter `Domain Admins` em todas as
+ * estações é o caso clássico — a expansão revela quem está dentro.
+ */
+const DOMAIN_WELL_KNOWN_GROUP_RIDS: Record<number, string> = {
   512: 'Domain Admins',
   513: 'Domain Users',
   516: 'Domain Controllers',
@@ -29,20 +42,36 @@ const DOMAIN_WELL_KNOWN_RIDS: Record<number, string> = {
   520: 'Group Policy Creator Owners',
 };
 
+const DOMAIN_WELL_KNOWN_RIDS: Record<number, string> = {
+  ...DOMAIN_WELL_KNOWN_USER_RIDS,
+  ...DOMAIN_WELL_KNOWN_GROUP_RIDS,
+};
+
+function domainRid(sid: string): number | null {
+  const m = /^S-1-5-21-\d+-\d+-\d+-(\d+)$/.exec(sid);
+  return m ? Number(m[1]) : null;
+}
+
 export function isWellKnownSid(sid: string): boolean {
   if (sid in STATIC_WELL_KNOWN) return true;
-  const m = /^S-1-5-21-\d+-\d+-\d+-(\d+)$/.exec(sid);
-  if (!m) return false;
-  const rid = Number(m[1]);
-  return rid in DOMAIN_WELL_KNOWN_RIDS;
+  const rid = domainRid(sid);
+  return rid !== null && rid in DOMAIN_WELL_KNOWN_RIDS;
+}
+
+/**
+ * Grupos built-in que vivem no AD (Domain Admins etc) — **devem ser
+ * expandidos** ao aparecer em Administrators local. Built-in locais
+ * (S-1-5-32-*) NÃO entram aqui: são coletâneas locais sem membros AD.
+ */
+export function isExpandableWellKnownGroupSid(sid: string): boolean {
+  const rid = domainRid(sid);
+  return rid !== null && rid in DOMAIN_WELL_KNOWN_GROUP_RIDS;
 }
 
 export function wellKnownName(sid: string): string | null {
   if (sid in STATIC_WELL_KNOWN) return STATIC_WELL_KNOWN[sid] ?? null;
-  const m = /^S-1-5-21-\d+-\d+-\d+-(\d+)$/.exec(sid);
-  if (!m) return null;
-  const rid = Number(m[1]);
-  return DOMAIN_WELL_KNOWN_RIDS[rid] ?? null;
+  const rid = domainRid(sid);
+  return rid !== null ? (DOMAIN_WELL_KNOWN_RIDS[rid] ?? null) : null;
 }
 
 /**

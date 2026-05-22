@@ -101,11 +101,15 @@ Contrato Zod compartilhado entre PS↔servidor: [`src/shared/ingest-contract.ts`
 |---|---|
 | SID órfão (não resolve no AD nem é local) | `critical` |
 | Conta AD nominal, **desabilitada** ainda no grupo | `critical` |
+| Grupo built-in do domínio em `Administrators` local (Domain Admins, Enterprise Admins…) | `critical` |
 | Conta AD nominal habilitada, sem exception | `high` |
+| Conta AD habilitada herdando via grupo built-in do domínio | `high` |
 | Service account AD (heurística por OU/sufixo) | `medium` |
 | Conta local da máquina | `medium` |
-| Built-in (S-1-5-32-544, Domain Admins...) | `low` |
+| Built-in **local** (`BUILTIN\Administrators`, `NT AUTHORITY\SYSTEM`…) | `low` |
 | Coberta por `exceptions` | `info` |
+
+> **Mudança v0.3.0**: grupos built-in do domínio (Domain Admins, Enterprise Admins, Schema Admins, Group Policy Creator Owners) deixam de ser tratados como "well-known baixo risco" — eles são **expandidos via LDAP** para listar os usuários que ganham admin via membership, e a entrada do grupo em si fica `critical`. Built-in **locais** (`S-1-5-32-*`) continuam `low`.
 
 ## Verificação end-to-end (após primeiro deploy)
 
@@ -193,5 +197,6 @@ A partir da v0.2.0 é possível **remover** um usuário do grupo `Administrators
 
 | Versão | Data | Notas |
 |---|---|---|
+| 0.3.0 | 2026-05-22 | **Resolução correta de grupos do domínio**. Agente PS agora roda `Translate([NTAccount])` em todo SID e detecta grupos built-in do domínio pelo RID (512/518/519/520) — corrige o `Get-LocalGroupMember` que reportava `Domain Admins` / `MM - Workstation Admins` como `User` com nome `{}`. Servidor expande Domain Admins/Enterprise Admins/Schema Admins via LDAP (severidade `critical` para o grupo, `high` para os membros herdados). Adicionado **backstop**: usuários que não casam no cache LDAP são re-tentados como grupo antes de cair em `ORPHAN_SID`. |
 | 0.2.0 | 2026-05-22 | Remediação ativa — remover usuários do Administrators local via Web UI com fluxo planned → confirmed → executed. |
 | 0.1.0 | 2026-05-22 | Primeira versão — ingestão, enricher LDAP, BI, exportação CSV. |

@@ -234,6 +234,93 @@ function Get-MachineContext {
 # ============================================================
 # 7. Enumera membros do grupo Administrators local
 # ============================================================
+
+# RIDs de grupos built-in do dominio. Quando o SID termina com um destes, e'
+# garantido que e' um GRUPO do AD, nao um usuario. O Get-LocalGroupMember
+# tem bug historico que retorna ObjectClass='User' para grupos de dominio
+# em varios cenarios — esta lista forca a classificacao correta.
+$Script:DomainGroupRids = @{
+    512 = 'Domain Admins'
+    513 = 'Domain Users'
+    516 = 'Domain Controllers'
+    518 = 'Schema Admins'
+    519 = 'Enterprise Admins'
+    520 = 'Group Policy Creator Owners'
+}
+
+# Sanitiza nome retornado por COM/ADSI: descarta hashtables vazias, objetos
+# sem propriedades enumeraveis (ConvertTo-Json serializa como '{}'), arrays,
+# strings vazias e o proprio SID. O servidor decide nome final via LDAP.
+function ConvertTo-CleanName {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [System.Array]) { return $null }
+    if ($Value -is [System.Collections.IDictionary]) { return $null }
+    if ($Value -is [System.__ComObject]) {
+        # Tenta puxar ToString; muitas vezes vira "System.__ComObject" — descarta.
+        $str = try { [string]$Value } catch { $null }
+        if (-not $str -or $str -match '^System\.') { return $null }
+    }
+    $str = [string]$Value
+    $str = $str.Trim()
+    if ($str -eq '') { return $null }
+    if ($str -eq '{}' -or $str -eq '[]') { return $null }
+    if ($str -match '^S-\d+-\d+(-\d+)*$') { return $null }
+    return $str
+}
+
+# Resolve um SID para "DOMAIN\Name" via Win32 LSA (cobre principals de
+# dominio que o Get-LocalGroupMember/ADSI nao consegue resolver localmente).
+function Resolve-SidToNtAccount {
+    param([string]$Sid)
+    if (-not $Sid) { return $null }
+    try {
+        $sidObj = New-Object System.Security.Principal.SecurityIdentifier($Sid)
+        $nt = $sidObj.Translate([System.Security.Principal.NTAccount])
+        if ($nt -and $nt.Value) { return [string]$nt.Value }
+    } catch {
+        # Conta orfa / DC fora de alcance — silencioso, o servidor lida.
+    }
+    return $null
+}
+
+# Detecta heuristicamente se um principal e' grupo, dadas pistas locais
+# (Class crua do PS/ADSI) + SID + nome resolvido. Retorna 'Group', 'User'
+# ou 'Unknown'. Os RIDs built-in do dominio sobrescrevem qualquer pista
+# errada que venha do Get-LocalGroupMember.
+function Get-PrincipalClass {
+    param(
+        [string]$Sid,
+        $RawClass,
+        [string]$ResolvedName
+    )
+
+    # 1. RID well-known de grupo do dominio — autoritativo.
+    if ($Sid -match '^S-1-5-21-\d+-\d+-\d+-(\d+)$') {
+        $rid = [int]$matches[1]
+        if ($Script:DomainGroupRids.ContainsKey($rid)) { return 'Group' }
+    }
+
+    # 2. Classe declarada pelo PS/ADSI, quando confiavel.
+    if ($RawClass) {
+        $rawStr = [string]$RawClass
+        if ($rawStr -ieq 'Group') { return 'Group' }
+        if ($rawStr -ieq 'User') {
+            # Pista fraca: para principals de dominio o Get-LocalGroupMember
+            # falsamente reporta 'User'. Confirmamos pelo nome resolvido.
+            if ($ResolvedName -and ($ResolvedName -match '\\(.+)$')) {
+                $tail = $matches[1]
+                if ($tail -match '(?i)\b(Admins|Group|Operators|Users|Owners|Controllers)$') {
+                    return 'Group'
+                }
+            }
+            return 'User'
+        }
+    }
+
+    return 'Unknown'
+}
+
 function Get-LocalAdminMembers {
     $members = @()
 
@@ -244,12 +331,21 @@ function Get-LocalAdminMembers {
     try {
         $rows = Get-LocalGroupMember -SID $adminSid -ErrorAction Stop
         foreach ($m in $rows) {
-            $class = if ($m.ObjectClass -eq 'Group') { 'Group' }
-                     elseif ($m.ObjectClass -eq 'User') { 'User' }
-                     else { 'Unknown' }
             $sidStr = $m.SID.Value
-            $name = $m.Name
-            $resolved = -not ($name -match '^S-1-')
+
+            # Sanitiza o Name do Get-LocalGroupMember (pode vir vazio/COM
+            # para principals de dominio nao resolviveis localmente).
+            $name = ConvertTo-CleanName $m.Name
+
+            # Sempre faz Translate([NTAccount]) como fallback definitivo —
+            # o LSA consegue resolver SIDs de dominio que o cmdlet nao.
+            if (-not $name) {
+                $name = Resolve-SidToNtAccount -Sid $sidStr
+            }
+
+            $class = Get-PrincipalClass -Sid $sidStr -RawClass $m.ObjectClass -ResolvedName $name
+            $resolved = [bool]$name
+
             $members += [PSCustomObject]@{
                 sid         = $sidStr
                 name        = $name
@@ -285,12 +381,10 @@ function Get-LocalAdminMembers {
 
     foreach ($member in $group.Invoke('Members')) {
         $sidStr  = $null
-        $name    = $null
-        $class   = 'Unknown'
-        $resolved = $false
+        $rawName = $null
+        $rawClass = $null
 
         try {
-            # SID via byte[] -> SecurityIdentifier
             $sidBytes = $member.GetType().InvokeMember('objectSid', 'GetProperty', $null, $member, $null)
             if ($sidBytes -is [byte[]]) {
                 $sid = New-Object System.Security.Principal.SecurityIdentifier($sidBytes, 0)
@@ -301,41 +395,29 @@ function Get-LocalAdminMembers {
         }
 
         try {
-            $name = $member.GetType().InvokeMember('Name', 'GetProperty', $null, $member, $null)
+            $rawName = $member.GetType().InvokeMember('Name', 'GetProperty', $null, $member, $null)
         } catch {
-            $name = $null
+            $rawName = $null
         }
 
         try {
             $rawClass = $member.GetType().InvokeMember('Class', 'GetProperty', $null, $member, $null)
-            if ($rawClass) {
-                if ($rawClass -ieq 'User') { $class = 'User' }
-                elseif ($rawClass -ieq 'Group') { $class = 'Group' }
-                else { $class = 'Unknown' }
-            }
         } catch {
-            $class = 'Unknown'
-        }
-
-        # Resolve nome bonito a partir do SID (caso o ADSI nao retornou direito)
-        if ($sidStr) {
-            try {
-                $sid = New-Object System.Security.Principal.SecurityIdentifier($sidStr)
-                $nt  = $sid.Translate([System.Security.Principal.NTAccount])
-                if ($nt -and $nt.Value) {
-                    $name = $nt.Value
-                    $resolved = $true
-                }
-            } catch {
-                $resolved = $false
-                if (-not $name) { $name = 'Conta orfa' }
-            }
+            $rawClass = $null
         }
 
         if (-not $sidStr) {
-            Write-Log "Membro sem SID detectavel; nome=$name" 'WARN'
+            Write-Log "Membro sem SID detectavel; nome=$rawName" 'WARN'
             continue
         }
+
+        # Sanitiza o nome cru, depois Translate como fonte autoritativa.
+        $name = ConvertTo-CleanName $rawName
+        $translated = Resolve-SidToNtAccount -Sid $sidStr
+        if ($translated) { $name = $translated }
+        $resolved = [bool]$name
+
+        $class = Get-PrincipalClass -Sid $sidStr -RawClass $rawClass -ResolvedName $name
 
         $members += [PSCustomObject]@{
             sid         = $sidStr

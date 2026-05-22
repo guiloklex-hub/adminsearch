@@ -1,11 +1,11 @@
-import { eq } from 'drizzle-orm';
-import type { FastifyInstance } from 'fastify';
 import type { DbClient } from '@server/db/client.ts';
 import { rawMembers, scanRuns } from '@server/db/schema.ts';
 import { identifyMachine } from '@server/ingest/identify-machine.ts';
 import { dispatch } from '@server/remediation/dispatch.ts';
 import { timingSafeEquals } from '@server/utils/timing-safe.ts';
 import { IngestPayloadSchema } from '@shared/ingest-contract.ts';
+import { eq } from 'drizzle-orm';
+import type { FastifyInstance } from 'fastify';
 
 export async function registerIngestRoute(
   app: FastifyInstance,
@@ -70,7 +70,7 @@ export async function registerIngestRoute(
             payload.members.map((m) => ({
               scanRunId: payload.scanId,
               sid: m.sid,
-              name: m.name ?? null,
+              name: sanitizeMemberName(m.name),
               objectClass: m.objectClass,
               resolved: m.resolved,
             })),
@@ -110,4 +110,18 @@ export async function registerIngestRoute(
       });
     },
   );
+}
+
+/**
+ * Descarta nomes degenerados emitidos pelo agente PS quando o
+ * `Get-LocalGroupMember` falha em resolver um principal de dominio:
+ * "{}" (objeto COM serializado vazio), "[]", string vazia, ou o
+ * proprio SID. O enricher resolve via LDAP / `wellKnownName`.
+ */
+function sanitizeMemberName(name: string | null | undefined): string | null {
+  if (name == null) return null;
+  const trimmed = String(name).trim();
+  if (trimmed === '' || trimmed === '{}' || trimmed === '[]') return null;
+  if (/^S-\d+-\d+(-\d+)*$/.test(trimmed)) return null;
+  return trimmed;
 }
