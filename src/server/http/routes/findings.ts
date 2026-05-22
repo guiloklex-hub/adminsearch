@@ -130,6 +130,10 @@ export async function registerFindingsRoutes(
           .union([z.boolean(), z.string()])
           .optional()
           .transform((v) => (typeof v === 'string' ? v === 'true' : v ?? false)),
+        onlyDirect: z
+          .union([z.boolean(), z.string()])
+          .optional()
+          .transform((v) => (typeof v === 'string' ? v === 'true' : v ?? false)),
         q: z.string().trim().max(120).optional(),
       })
       .parse(req.query);
@@ -178,7 +182,8 @@ export async function registerFindingsRoutes(
              SUM(CASE WHEN em.severity='critical' THEN 1 ELSE 0 END)::int AS critical_count,
              SUM(CASE WHEN em.severity='high' THEN 1 ELSE 0 END)::int AS high_count,
              SUM(CASE WHEN em.severity='medium' THEN 1 ELSE 0 END)::int AS medium_count,
-             SUM(CASE WHEN em.via_group IS NOT NULL THEN 1 ELSE 0 END)::int AS via_group_count
+             SUM(CASE WHEN em.via_group IS NOT NULL THEN 1 ELSE 0 END)::int AS via_group_count,
+             COUNT(DISTINCT CASE WHEN em.via_group IS NULL THEN em.machine_id END)::int AS direct_machine_count
       FROM effective_members em
       JOIN latest_scan ls ON ls.id = em.scan_run_id
       LEFT JOIN ad_users au ON au.sid = em.sid
@@ -186,6 +191,7 @@ export async function registerFindingsRoutes(
       GROUP BY em.sid, au.display_name, em.name, au.sam_account_name, au.user_principal_name,
                au.email, au.department, au.title, au.enabled, au.is_service_account, au.last_logon,
                em.source
+      ${sql.raw(q.onlyDirect ? 'HAVING COUNT(DISTINCT CASE WHEN em.via_group IS NULL THEN em.machine_id END) > 0' : '')}
       ORDER BY machine_count DESC, name ASC
       LIMIT ${q.limit};
     `);

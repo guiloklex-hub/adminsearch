@@ -282,6 +282,7 @@ interface UserRow {
   high_count: number;
   medium_count: number;
   via_group_count: number;
+  direct_machine_count: number;
 }
 
 interface MachineRow {
@@ -307,6 +308,7 @@ function FindingsByUser() {
   const [hideServiceAccounts, setHideServiceAccounts] = useState(true);
   const [hideExceptions, setHideExceptions] = useState(true);
   const [onlyEnabled, setOnlyEnabled] = useState(true);
+  const [onlyDirect, setOnlyDirect] = useState(false);
   const [expandedSid, setExpandedSid] = useState<string | null>(null);
 
   const toggleSource = (s: SourceKey) => {
@@ -317,7 +319,7 @@ function FindingsByUser() {
     queryKey: [
       'findings',
       'by-user',
-      { q, sources, hideServiceAccounts, hideExceptions, onlyEnabled },
+      { q, sources, hideServiceAccounts, hideExceptions, onlyEnabled, onlyDirect },
     ],
     queryFn: () =>
       api<{ items: UserRow[] }>(
@@ -327,6 +329,7 @@ function FindingsByUser() {
           hideServiceAccounts,
           hideExceptions,
           onlyEnabled,
+          onlyDirect,
           limit: 500,
         })}`,
       ),
@@ -387,6 +390,11 @@ function FindingsByUser() {
 
         <Toggle label="Só habilitados" value={onlyEnabled} onChange={setOnlyEnabled} />
         <Toggle
+          label="Só adições diretas (sem via grupo)"
+          value={onlyDirect}
+          onChange={setOnlyDirect}
+        />
+        <Toggle
           label="Esconder service accounts"
           value={hideServiceAccounts}
           onChange={setHideServiceAccounts}
@@ -418,7 +426,21 @@ function FindingsByUser() {
                 <th style={thStyle}>Email</th>
                 <th style={thStyle}>Departamento</th>
                 <th style={thStyle}>AD</th>
-                <th style={{ ...thStyle, textAlign: 'right' }}>Máquinas</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Total de máquinas onde é admin">
+                  Máquinas
+                </th>
+                <th
+                  style={{ ...thStyle, textAlign: 'right' }}
+                  title="Máquinas onde foi adicionado direto ao Administrators local (não via grupo)"
+                >
+                  Direto
+                </th>
+                <th
+                  style={{ ...thStyle, textAlign: 'right' }}
+                  title="Máquinas onde herda admin via grupo AD"
+                >
+                  Via grupo
+                </th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Críticos</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Altos</th>
                 <th style={thStyle}>Origem</th>
@@ -438,7 +460,7 @@ function FindingsByUser() {
               })}
               {data && data.items.length === 0 && (
                 <tr>
-                  <td colSpan={10} style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}>
+                  <td colSpan={12} style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}>
                     Nenhum usuário casa com esses filtros.
                   </td>
                 </tr>
@@ -525,6 +547,25 @@ function UserAggregateRow({
           style={{
             ...tdStyle,
             textAlign: 'right',
+            fontWeight: user.direct_machine_count > 0 ? 600 : 400,
+            color:
+              user.direct_machine_count > 0 ? 'var(--color-critical)' : 'var(--color-muted)',
+          }}
+          title={
+            user.direct_machine_count > 0
+              ? 'Adicionado direto ao Administrators local (requer atenção)'
+              : 'Sem adição direta — só via grupo'
+          }
+        >
+          {user.direct_machine_count}
+        </td>
+        <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--color-muted)' }}>
+          {user.via_group_count}
+        </td>
+        <td
+          style={{
+            ...tdStyle,
+            textAlign: 'right',
             color: user.critical_count > 0 ? 'var(--color-critical)' : 'var(--color-muted)',
             fontWeight: user.critical_count > 0 ? 600 : 400,
           }}
@@ -543,16 +584,17 @@ function UserAggregateRow({
         </td>
         <td style={tdStyle}>
           <span style={{ fontSize: 11 }}>{user.source}</span>
-          {user.via_group_count > 0 && (
-            <div style={{ fontSize: 10, color: 'var(--color-muted)' }}>
-              {user.via_group_count} via grupo
-            </div>
+          {user.via_group_count > 0 && user.direct_machine_count === 0 && (
+            <div style={{ fontSize: 10, color: 'var(--color-muted)' }}>só via grupo</div>
+          )}
+          {user.direct_machine_count > 0 && user.via_group_count > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--color-muted)' }}>direto + grupo</div>
           )}
         </td>
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={10} style={{ ...tdStyle, padding: 16, background: 'var(--color-surface-2)' }}>
+          <td colSpan={12} style={{ ...tdStyle, padding: 16, background: 'var(--color-surface-2)' }}>
             {isLoading ? (
               <div>Carregando máquinas...</div>
             ) : machines && machines.items.length > 0 ? (
