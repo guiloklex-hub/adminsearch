@@ -237,29 +237,50 @@ function Get-MachineContext {
 function Get-LocalAdminMembers {
     $members = @()
 
-    # SID well-known do grupo Administrators local
+    # SID well-known do grupo Administrators local (independe de idioma)
     $adminSid = 'S-1-5-32-544'
 
+    # Caminho preferido: Get-LocalGroupMember aceita SID nativo (Win10+ / Server 2016+)
     try {
-        $group = [ADSI]"WinNT://./$adminSid,group"
-    } catch {
-        Write-Log "ADSI falhou em S-1-5-32-544; tentando Get-LocalGroupMember. Erro: $($_.Exception.Message)" 'WARN'
-        # Fallback (Win10+ tem Get-LocalGroupMember; pode falhar em servidores antigos)
-        try {
-            $fallback = Get-LocalGroupMember -SID $adminSid -ErrorAction Stop
-            foreach ($m in $fallback) {
-                $members += [PSCustomObject]@{
-                    sid         = $m.SID.Value
-                    name        = $m.Name
-                    objectClass = if ($m.ObjectClass -eq 'Group') { 'Group' } elseif ($m.ObjectClass -eq 'User') { 'User' } else { 'Unknown' }
-                    resolved    = $true
-                }
+        $rows = Get-LocalGroupMember -SID $adminSid -ErrorAction Stop
+        foreach ($m in $rows) {
+            $class = if ($m.ObjectClass -eq 'Group') { 'Group' }
+                     elseif ($m.ObjectClass -eq 'User') { 'User' }
+                     else { 'Unknown' }
+            $sidStr = $m.SID.Value
+            $name = $m.Name
+            $resolved = -not ($name -match '^S-1-')
+            $members += [PSCustomObject]@{
+                sid         = $sidStr
+                name        = $name
+                objectClass = $class
+                resolved    = $resolved
             }
-            return $members
-        } catch {
-            Write-Log "Fallback Get-LocalGroupMember tambem falhou: $($_.Exception.Message)" 'ERROR'
-            throw
         }
+        return $members
+    } catch {
+        Write-Log "Get-LocalGroupMember falhou: $($_.Exception.Message). Caindo para ADSI." 'WARN'
+    }
+
+    # Fallback ADSI - ADsPath WinNT exige NOME do grupo (varia por idioma:
+    # 'Administrators' em ingles, 'Administradores' em PT-BR). Traduzimos
+    # o SID well-known para o nome local antes.
+    $groupName = $null
+    try {
+        $sidObj = New-Object System.Security.Principal.SecurityIdentifier($adminSid)
+        $ntAccount = $sidObj.Translate([System.Security.Principal.NTAccount]).Value
+        # Remove prefixo "BUILTIN\" ou "VAI-COMP\" para obter so o nome
+        $groupName = ($ntAccount -split '\\')[-1]
+    } catch {
+        Write-Log "Nao foi possivel traduzir S-1-5-32-544 para nome local: $($_.Exception.Message)" 'ERROR'
+        throw
+    }
+
+    try {
+        $group = [ADSI]"WinNT://./$groupName,group"
+    } catch {
+        Write-Log "ADSI falhou ao abrir grupo '$groupName': $($_.Exception.Message)" 'ERROR'
+        throw
     }
 
     foreach ($member in $group.Invoke('Members')) {
