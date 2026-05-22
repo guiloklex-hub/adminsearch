@@ -27,6 +27,14 @@ const envSchema = z.object({
   LDAP_BASE_DN: z.string().optional(),
   LDAP_TLS_CA_FILE: z.string().optional(),
 
+  // CUIDADO: pula validacao de certificado do LDAPS. Mantem cifragem na rede
+  // mas fica vulneravel a MITM. So use em rede interna controlada quando o
+  // CA da empresa nao for facilmente disponibilizavel.
+  LDAP_TLS_INSECURE: z
+    .union([z.boolean(), z.string()])
+    .transform((v) => (typeof v === 'string' ? v.toLowerCase() === 'true' : v))
+    .default(false),
+
   STALE_AGENT_DAYS: z.coerce.number().int().min(1).max(365).default(7),
   AD_USER_CACHE_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(24),
   ENRICHER_POLL_MS: z.coerce.number().int().min(1000).max(60_000).default(5000),

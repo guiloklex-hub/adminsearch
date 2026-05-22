@@ -8,6 +8,7 @@ export interface LdapConfig {
   bindPassword: string;
   baseDn: string;
   tlsCaFile?: string | undefined;
+  tlsInsecure?: boolean | undefined;
 }
 
 /**
@@ -47,11 +48,20 @@ export class LdapPool {
     if (this.connecting) return this.connecting;
 
     this.connecting = (async () => {
+      const tlsOptions: { ca?: Buffer; rejectUnauthorized?: boolean } = {};
+      if (this.tlsCa) tlsOptions.ca = this.tlsCa;
+      if (this.cfg.tlsInsecure) {
+        tlsOptions.rejectUnauthorized = false;
+        this.logger.warn(
+          'LDAP_TLS_INSECURE=true — validacao de cert do LDAPS desabilitada. Vulneravel a MITM.',
+        );
+      }
+
       const client = new Client({
         url: this.cfg.url,
         timeout: 10_000,
         connectTimeout: 5_000,
-        tlsOptions: this.tlsCa ? { ca: this.tlsCa } : undefined,
+        tlsOptions: Object.keys(tlsOptions).length > 0 ? tlsOptions : undefined,
       });
       await client.bind(this.cfg.bindDn, this.cfg.bindPassword);
       this.client = client;

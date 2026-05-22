@@ -31,6 +31,7 @@ async function main(): Promise<void> {
           bindPassword: env.LDAP_BIND_PASSWORD as string,
           baseDn: env.LDAP_BASE_DN as string,
           tlsCaFile: env.LDAP_TLS_CA_FILE,
+          tlsInsecure: env.LDAP_TLS_INSECURE,
         },
         logger,
       );
