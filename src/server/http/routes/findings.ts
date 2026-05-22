@@ -136,7 +136,7 @@ export async function registerFindingsRoutes(
       FROM effective_members em
       JOIN latest_scan ls ON ls.id = em.scan_run_id
       LEFT JOIN ad_users au ON au.sid = em.sid
-      GROUP BY em.sid, name, au.sam_account_name, au.department, em.source
+      GROUP BY em.sid, au.display_name, em.name, au.sam_account_name, au.department, em.source
       ORDER BY machine_count DESC, name ASC
       LIMIT ${q.limit};
     `);

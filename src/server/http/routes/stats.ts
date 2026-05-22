@@ -65,7 +65,7 @@ export async function registerStatsRoutes(
       JOIN latest_scan ls ON ls.id = em.scan_run_id
       LEFT JOIN ad_users au ON au.sid = em.sid
       WHERE em.source IN ('AD_USER','ORPHAN_SID')
-      GROUP BY em.sid, name, au.sam_account_name
+      GROUP BY em.sid, au.display_name, em.name, au.sam_account_name
       ORDER BY machine_count DESC
       LIMIT 10;
     `);
