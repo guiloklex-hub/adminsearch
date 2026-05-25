@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Dashboard } from './components/Dashboard.tsx';
 import { EventsPage } from './components/EventsPage.tsx';
 import { FindingsPage } from './components/FindingsPage.tsx';
+import { InstitutionalGroupsPage } from './components/InstitutionalGroupsPage.tsx';
 import { Layout, type Route } from './components/Layout.tsx';
 import { LoginPage } from './components/LoginPage.tsx';
 import { MachineDetail } from './components/MachineDetail.tsx';
@@ -96,6 +97,7 @@ export function App() {
       {route === 'events' && <EventsPage />}
       {route === 'remediation' && <RemediationPage />}
       {route === 'severity-policy' && <SeverityPolicyPage />}
+      {route === 'institutional-groups' && <InstitutionalGroupsPage />}
       {route === 'settings' && <SettingsPage />}
     </Layout>
   );

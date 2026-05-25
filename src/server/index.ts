@@ -1,6 +1,7 @@
 import { createDb } from '@server/db/client.ts';
 import { runMigrations } from '@server/db/migrate.ts';
 import { Enricher } from '@server/enricher/index.ts';
+import { initInstitutionalGroupsCache } from '@server/enricher/institutional-groups-cache.ts';
 import { LdapPool } from '@server/enricher/ldap-client.ts';
 import { initSeverityPolicyCache } from '@server/enricher/severity-policy-cache.ts';
 import { ldapConfigured, loadEnv } from '@server/env.ts';
@@ -23,6 +24,10 @@ async function main(): Promise<void> {
   const policyCache = initSeverityPolicyCache(db);
   await policyCache.ensureLoaded();
   logger.info('cache de política de severidade carregado');
+
+  const institutionalCache = initInstitutionalGroupsCache(db);
+  await institutionalCache.ensureLoaded();
+  logger.info('cache de grupos institucionais carregado');
 
   let ldap: LdapPool | null = null;
   let enricher: Enricher | null = null;

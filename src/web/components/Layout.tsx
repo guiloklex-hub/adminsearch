@@ -8,6 +8,7 @@ const NAV = [
   { id: 'events', label: 'Eventos' },
   { id: 'remediation', label: 'A executar' },
   { id: 'severity-policy', label: 'Política de Severidade' },
+  { id: 'institutional-groups', label: 'Grupos Institucionais' },
   { id: 'settings', label: 'Configurações' },
 ] as const;
 

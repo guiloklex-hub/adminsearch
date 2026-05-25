@@ -71,6 +71,10 @@ export function MachineDetail({ id, onBack }: { id: string; onBack: () => void }
   const [tagsInput, setTagsInput] = useState('');
   const [notes, setNotes] = useState('');
   const [removeTarget, setRemoveTarget] = useState<RemediationTarget | null>(null);
+  const [institutionalTarget, setInstitutionalTarget] = useState<{
+    sid: string;
+    suggestedName: string;
+  } | null>(null);
 
   // Sincroniza inputs locais quando os dados da máquina chegam (ou quando a
   // navegação muda de máquina). Roda só na mudança de id/data — não bate na
@@ -229,32 +233,61 @@ export function MachineDetail({ id, onBack }: { id: string; onBack: () => void }
                   </td>
                   <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11 }}>{a.sid}</td>
                   <td style={tdStyle}>
-                    {canRemediate && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setRemoveTarget({
-                            machineId: id,
-                            hostName: m.dnsHostName,
-                            sid: a.sid,
-                            name: a.name,
-                            severity: a.severity,
-                            source: a.source,
-                            viaGroup: a.viaGroup,
-                          })
-                        }
-                        style={{
-                          padding: '2px 8px',
-                          background: 'transparent',
-                          border: '1px solid var(--color-border)',
-                          color: 'var(--color-critical)',
-                          borderRadius: 4,
-                          fontSize: 11,
-                        }}
-                      >
-                        Remover
-                      </button>
-                    )}
+                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                      {a.viaGroup === null && a.source !== 'WELL_KNOWN' && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setInstitutionalTarget({
+                              sid: a.sid,
+                              suggestedName:
+                                a.name && a.name !== '{}'
+                                  ? a.name.includes('\\')
+                                    ? (a.name.split('\\').pop() ?? a.name)
+                                    : a.name
+                                  : '',
+                            })
+                          }
+                          style={{
+                            padding: '2px 8px',
+                            background: 'transparent',
+                            border: '1px solid var(--color-border)',
+                            color: 'var(--color-muted)',
+                            borderRadius: 4,
+                            fontSize: 11,
+                          }}
+                          title="Cadastrar este SID como grupo institucional da empresa"
+                        >
+                          Grupo institucional
+                        </button>
+                      )}
+                      {canRemediate && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRemoveTarget({
+                              machineId: id,
+                              hostName: m.dnsHostName,
+                              sid: a.sid,
+                              name: a.name,
+                              severity: a.severity,
+                              source: a.source,
+                              viaGroup: a.viaGroup,
+                            })
+                          }
+                          style={{
+                            padding: '2px 8px',
+                            background: 'transparent',
+                            border: '1px solid var(--color-border)',
+                            color: 'var(--color-critical)',
+                            borderRadius: 4,
+                            fontSize: 11,
+                          }}
+                        >
+                          Remover
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -327,6 +360,162 @@ export function MachineDetail({ id, onBack }: { id: string; onBack: () => void }
         onClose={() => setRemoveTarget(null)}
         onPlanned={() => setRemoveTarget(null)}
       />
+
+      <InstitutionalGroupModal
+        target={institutionalTarget}
+        onClose={() => setInstitutionalTarget(null)}
+        onSaved={() => {
+          setInstitutionalTarget(null);
+          qc.invalidateQueries({ queryKey: ['machine', id] });
+          qc.invalidateQueries({ queryKey: ['institutional-groups'] });
+          qc.invalidateQueries({ queryKey: ['severity-policies'] });
+        }}
+      />
+    </div>
+  );
+}
+
+function InstitutionalGroupModal({
+  target,
+  onClose,
+  onSaved,
+}: {
+  target: { sid: string; suggestedName: string } | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [displayName, setDisplayName] = useState('');
+  const [samAccountName, setSamAccountName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (target) {
+      setDisplayName(target.suggestedName);
+      setSamAccountName('');
+      setError(null);
+    }
+  }, [target]);
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      api(`/api/v1/institutional-groups/${encodeURIComponent(target?.sid ?? '')}`, {
+        method: 'PUT',
+        json: { displayName, samAccountName: samAccountName.trim() || null },
+      }),
+    onSuccess: () => onSaved(),
+    onError: (err) => setError((err as Error).message),
+  });
+
+  if (!target) return null;
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.6)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 100,
+      }}
+      onClick={onClose}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onClose();
+      }}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        role="document"
+        style={{
+          background: 'var(--color-surface)',
+          border: '1px solid var(--color-border)',
+          borderRadius: 12,
+          padding: 24,
+          width: 520,
+          maxWidth: '90vw',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12,
+        }}
+      >
+        <div style={{ fontWeight: 600, fontSize: 16 }}>Cadastrar grupo institucional</div>
+        <div style={{ fontSize: 13, color: 'var(--color-muted)', lineHeight: 1.5 }}>
+          Esse SID passa a ser tratado como grupo institucional conhecido — vira{' '}
+          <strong>Baixo</strong> em todas as máquinas e o nome cadastrado substitui o atual
+          imediatamente.
+        </div>
+
+        <label style={{ fontSize: 12, color: 'var(--color-muted)' }}>SID</label>
+        <input
+          value={target.sid}
+          readOnly
+          style={{ ...inputStyle, fontFamily: 'monospace', opacity: 0.7 }}
+        />
+
+        <label style={{ fontSize: 12, color: 'var(--color-muted)' }}>Nome amigável</label>
+        <input
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          placeholder="ex.: MM - Workstation Admins"
+          style={inputStyle}
+        />
+
+        <label style={{ fontSize: 12, color: 'var(--color-muted)' }}>
+          sAMAccountName (opcional, ajuda o LDAP a achar)
+        </label>
+        <input
+          value={samAccountName}
+          onChange={(e) => setSamAccountName(e.target.value)}
+          placeholder="ex.: MM-Workstation-Admins"
+          style={inputStyle}
+        />
+
+        {error && <div style={{ color: 'var(--color-critical)', fontSize: 13 }}>{error}</div>}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              padding: '6px 12px',
+              background: 'transparent',
+              border: '1px solid var(--color-border)',
+              color: 'var(--color-muted)',
+              borderRadius: 6,
+              fontSize: 13,
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const name = displayName.trim();
+              if (!name) {
+                setError('Nome amigável é obrigatório.');
+                return;
+              }
+              setError(null);
+              mutation.mutate();
+            }}
+            disabled={mutation.isPending}
+            style={{
+              padding: '6px 14px',
+              background: 'var(--color-accent)',
+              border: 'none',
+              color: 'white',
+              borderRadius: 6,
+              fontSize: 13,
+            }}
+          >
+            {mutation.isPending ? 'Salvando...' : 'Salvar'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -16,6 +16,7 @@ import { registerExportRoutes } from '@server/http/routes/export.ts';
 import { registerFindingsRoutes } from '@server/http/routes/findings.ts';
 import { registerHealthz } from '@server/http/routes/healthz.ts';
 import { registerIngestRoute } from '@server/http/routes/ingest.ts';
+import { registerInstitutionalGroupsRoutes } from '@server/http/routes/institutional-groups.ts';
 import { registerMachinesRoutes } from '@server/http/routes/machines.ts';
 import {
   registerRemediationResultRoute,
@@ -107,6 +108,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   });
   await app.register(async (scope) => {
     await registerSeverityPoliciesRoutes(scope, { db: opts.db });
+  });
+  await app.register(async (scope) => {
+    await registerInstitutionalGroupsRoutes(scope, { db: opts.db });
   });
   await app.register(async (scope) => {
     await registerExportRoutes(scope, { db: opts.db });

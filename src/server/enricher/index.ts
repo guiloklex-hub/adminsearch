@@ -9,6 +9,7 @@ import {
 import { AdUserCache } from '@server/enricher/ad-user-cache.ts';
 import { findMatchingException } from '@server/enricher/exception-matcher.ts';
 import { type ExpandedGroupResult, expandGroupBySid } from '@server/enricher/expand-group.ts';
+import { getInstitutionalGroupsCache } from '@server/enricher/institutional-groups-cache.ts';
 import type { LdapPool } from '@server/enricher/ldap-client.ts';
 import { getSeverityPolicyCache } from '@server/enricher/severity-policy-cache.ts';
 import {
@@ -48,15 +49,15 @@ interface EffectiveDraft {
 }
 
 /**
- * Wrapper que aplica o override de política sobre o resultado default
- * de `classifySeverity`. Recarrega o cache na primeira chamada de cada
- * `processOne()`.
+ * Wrapper que aplica os caches de runtime (grupos institucionais + override
+ * de política) sobre o resultado default de `classifySeverity`.
  */
 function classifyWithPolicy(input: Parameters<typeof classifySeverity>[0]): {
   severity: Severity;
   reasonCode: ReasonCode;
 } {
-  const { severity: defaultSeverity, reasonCode } = classifySeverity(input);
+  const institutional = getInstitutionalGroupsCache().sids();
+  const { severity: defaultSeverity, reasonCode } = classifySeverity(input, institutional);
   const overridden = getSeverityPolicyCache().resolve(reasonCode);
   return { severity: overridden ?? defaultSeverity, reasonCode };
 }
@@ -171,9 +172,17 @@ export class Enricher {
 
     const groupSids = new Set<string>();
     const userCandidates: typeof raw = [];
+    const institutionalCache = getInstitutionalGroupsCache();
 
     for (const r of raw) {
-      if (r.objectClass === 'Group' || isExpandableWellKnownGroupSid(r.sid)) {
+      // SID cadastrado em /institutional-groups: força tratar como grupo,
+      // independente da classificação do agente PS (que historicamente erra
+      // em Get-LocalGroupMember).
+      if (
+        r.objectClass === 'Group' ||
+        isExpandableWellKnownGroupSid(r.sid) ||
+        institutionalCache.has(r.sid)
+      ) {
         groupSids.add(r.sid);
       } else {
         userCandidates.push(r);
@@ -262,6 +271,7 @@ export class Enricher {
     for (const groupSid of groupSids) {
       const rawGroup = raw.find((r) => r.sid === groupSid);
       const rawName = cleanRawName(rawGroup?.name ?? null);
+      const institutional = institutionalCache.get(groupSid);
 
       // Built-in NAO expansivel (BUILTIN\*, NT AUTHORITY\*): so registra
       // a entrada do grupo, sem expandir via LDAP.
@@ -289,25 +299,28 @@ export class Enricher {
         continue;
       }
 
-      // Grupos do dominio (incluindo built-in expansiveis): expandir via LDAP.
+      // Grupos do dominio (incluindo built-in expansiveis e institucionais
+      // cadastrados): expandir via LDAP. Para institucionais, o samAccountName
+      // cadastrado é o hint mais confiável (rawGroup?.name muitas vezes vem
+      // como "{}" justamente porque o agente não conseguiu resolver).
+      const expansionHint = institutional?.samAccountName ?? rawGroup?.name ?? null;
       const expanded =
         preExpanded.get(groupSid) ??
-        (await expandGroupBySid(
-          this.deps.ldap,
-          groupSid,
-          rawGroup?.name ?? null,
-          this.deps.logger,
-        ).catch((err) => {
-          this.deps.logger.warn({ err, groupSid }, 'falha ao expandir grupo');
-          return null;
-        }));
+        (await expandGroupBySid(this.deps.ldap, groupSid, expansionHint, this.deps.logger).catch(
+          (err) => {
+            this.deps.logger.warn({ err, groupSid }, 'falha ao expandir grupo');
+            return null;
+          },
+        ));
 
       // Entrada do GRUPO em si — mesmo expandindo, queremos registrar que o
       // grupo aparece em Administrators local. Se for built-in do dominio
-      // (Domain Admins, Enterprise Admins...), e' WELL_KNOWN critical.
+      // (Domain Admins, Enterprise Admins...) OU institucional cadastrado,
+      // criamos a entrada WELL_KNOWN com classificação adequada via
+      // `classifyWithPolicy` (que sabe ler o cache institucional).
       const isBuiltinDomain = isExpandableWellKnownGroupSid(groupSid);
-      if (isBuiltinDomain) {
-        const builtinDomainClass = classifyWithPolicy({
+      if (isBuiltinDomain || institutional) {
+        const groupEntryClass = classifyWithPolicy({
           sid: groupSid,
           source: 'WELL_KNOWN',
           hasMatchedException: false,
@@ -317,22 +330,24 @@ export class Enricher {
         });
         drafts.push({
           sid: groupSid,
-          name: expanded?.groupCn ?? rawName ?? wellKnownName(groupSid),
+          name:
+            institutional?.displayName ?? expanded?.groupCn ?? rawName ?? wellKnownName(groupSid),
           source: 'WELL_KNOWN',
           viaGroup: null,
           viaGroupSid: null,
           adEnabled: null,
           isServiceAccount: false,
-          severity: builtinDomainClass.severity,
-          reasonCode: builtinDomainClass.reasonCode,
+          severity: groupEntryClass.severity,
+          reasonCode: groupEntryClass.reasonCode,
           matchedExceptionId: null,
         });
       }
 
       if (!expanded) {
-        // Grupo nao built-in que falhou a expansao via LDAP. So registra
-        // se nao for built-in (esse caso ja registrou WELL_KNOWN acima).
-        if (!isBuiltinDomain) {
+        // Grupo nao built-in / nao institucional que falhou a expansao via
+        // LDAP. Só registra como ORPHAN_SID se nao for built-in nem
+        // institucional — esses casos já registraram WELL_KNOWN acima.
+        if (!isBuiltinDomain && !institutional) {
           const orphanClass = classifyWithPolicy({
             sid: groupSid,
             source: 'ORPHAN_SID',

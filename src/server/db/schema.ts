@@ -159,6 +159,17 @@ export const severityPolicies = pgTable('severity_policies', {
   updatedBy: text('updated_by').notNull(),
 });
 
+/* ---------- Grupos institucionais (cadastro manual de SIDs) ---------- */
+
+export const institutionalGroups = pgTable('institutional_groups', {
+  sid: text('sid').primaryKey(),
+  displayName: text('display_name').notNull(),
+  samAccountName: text('sam_account_name'),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 /* ---------- Eventos (diff entre scans consecutivos) ---------- */
 
 export const findingsEvents = pgTable(

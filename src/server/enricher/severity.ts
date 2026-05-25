@@ -14,6 +14,7 @@ export const REASON_CODES = [
   'MATCHED_EXCEPTION',
   'BUILTIN_LOCAL',
   'BUILTIN_DOMAIN_GROUP_DIRECT',
+  'INSTITUTIONAL_GROUP_DIRECT',
   'ORPHAN_DIRECT',
   'ORPHAN_VIA_GROUP',
   'AD_DISABLED_DIRECT',
@@ -34,6 +35,7 @@ export const DEFAULT_SEVERITY_BY_REASON: Record<ReasonCode, Severity> = {
   MATCHED_EXCEPTION: 'info',
   BUILTIN_LOCAL: 'low',
   BUILTIN_DOMAIN_GROUP_DIRECT: 'critical',
+  INSTITUTIONAL_GROUP_DIRECT: 'low',
   ORPHAN_DIRECT: 'critical',
   ORPHAN_VIA_GROUP: 'medium',
   AD_DISABLED_DIRECT: 'critical',
@@ -69,6 +71,11 @@ export const REASON_LABELS: Record<ReasonCode, { title: string; description: str
     title: 'Grupo built-in do domínio direto em Administrators local',
     description:
       'Domain Admins, Enterprise Admins, etc. adicionados direto em Administrators local — toda a equipe de TI vira admin do parque sem auditoria.',
+  },
+  INSTITUTIONAL_GROUP_DIRECT: {
+    title: 'Grupo institucional cadastrado',
+    description:
+      'Grupo do AD cadastrado em /institutional-groups como institucional da empresa (ex.: "MM - Workstation Admins") — estado esperado, mas vale revisar a lista de membros periodicamente.',
   },
   ORPHAN_DIRECT: {
     title: 'SID órfão adicionado direto',
@@ -183,9 +190,26 @@ function toFlat(input: SeverityInput): SeverityFlatInput {
  * Árvore de decisão única — devolve o `reasonCode` correspondente ao caso.
  * Tanto `classifySeverity` quanto `explainSeverity` consomem essa função
  * pra manter as duas saídas sincronizadas.
+ *
+ * `institutionalGroupSids` (opcional): conjunto de SIDs cadastrados em
+ * /institutional-groups. Quando o SID atual é direto e está na lista,
+ * a classificação salta para `INSTITUTIONAL_GROUP_DIRECT` (default `low`).
  */
-export function classifyReason(input: SeverityFlatInput): ReasonCode {
+export function classifyReason(
+  input: SeverityFlatInput,
+  institutionalGroupSids?: ReadonlySet<string>,
+): ReasonCode {
   if (input.hasMatchedException) return 'MATCHED_EXCEPTION';
+
+  const isDirectEarly = input.viaGroup === null;
+
+  // Grupo institucional cadastrado pela operação — vence built-in e tudo
+  // mais. Só aplica quando aparece *direto* em Administrators local (a
+  // entrada do grupo em si). Membros via o grupo continuam classificados
+  // pelas regras de AD_USER abaixo, com viaGroup setado.
+  if (isDirectEarly && institutionalGroupSids && institutionalGroupSids.has(input.sid)) {
+    return 'INSTITUTIONAL_GROUP_DIRECT';
+  }
 
   // Built-in locais (BUILTIN\Administrators, NT AUTHORITY\SYSTEM) — esperados.
   if (
@@ -235,20 +259,26 @@ export function classifyReason(input: SeverityFlatInput): ReasonCode {
  * do sistema — não consulta políticas de override; o caller (enricher) é
  * que decide aplicar override via `resolveSeverity()` do cache.
  */
-export function classifySeverity(input: SeverityInput): {
+export function classifySeverity(
+  input: SeverityInput,
+  institutionalGroupSids?: ReadonlySet<string>,
+): {
   severity: Severity;
   reasonCode: ReasonCode;
 } {
-  const reasonCode = classifyReason(toFlat(input));
+  const reasonCode = classifyReason(toFlat(input), institutionalGroupSids);
   return { severity: DEFAULT_SEVERITY_BY_REASON[reasonCode], reasonCode };
 }
 
 /** Mesma coisa, mas a partir dos sinais achatados (sem CachedAdUser). */
-export function classifySeverityFromRow(input: SeverityFlatInput): {
+export function classifySeverityFromRow(
+  input: SeverityFlatInput,
+  institutionalGroupSids?: ReadonlySet<string>,
+): {
   severity: Severity;
   reasonCode: ReasonCode;
 } {
-  const reasonCode = classifyReason(input);
+  const reasonCode = classifyReason(input, institutionalGroupSids);
   return { severity: DEFAULT_SEVERITY_BY_REASON[reasonCode], reasonCode };
 }
 
@@ -257,8 +287,11 @@ export function classifySeverityFromRow(input: SeverityFlatInput): {
  * `viaGroup` real quando relevante. Para a forma estática (página de policy),
  * use `REASON_LABELS`.
  */
-export function explainSeverity(input: SeverityFlatInput): string {
-  const code = classifyReason(input);
+export function explainSeverity(
+  input: SeverityFlatInput,
+  institutionalGroupSids?: ReadonlySet<string>,
+): string {
+  const code = classifyReason(input, institutionalGroupSids);
   const viaGroup = input.viaGroup ?? '';
 
   switch (code) {
@@ -268,6 +301,8 @@ export function explainSeverity(input: SeverityFlatInput): string {
       return 'Built-in local do Windows (ex.: BUILTIN\\Administrators, NT AUTHORITY\\SYSTEM) — estado esperado.';
     case 'BUILTIN_DOMAIN_GROUP_DIRECT':
       return 'Grupo built-in do domínio (Domain Admins, Enterprise Admins, etc.) adicionado direto em Administrators local — toda a equipe de TI vira admin do parque sem auditoria.';
+    case 'INSTITUTIONAL_GROUP_DIRECT':
+      return 'Grupo institucional cadastrado em /institutional-groups — estado esperado pela organização, mas vale revisar periodicamente quem está nele.';
     case 'ORPHAN_DIRECT':
       return 'SID órfão adicionado direto: a conta foi deletada no AD mas continua como admin nominal nesta máquina.';
     case 'ORPHAN_VIA_GROUP':
