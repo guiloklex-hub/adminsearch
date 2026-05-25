@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
 import { ApiError, api } from '@web/lib/api.ts';
+import { useState } from 'react';
 import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 
 interface Exception {
@@ -37,7 +37,7 @@ export function SettingsPage() {
 
   const testLdap = useMutation({
     mutationFn: () => api<{ ok: boolean; message?: string }>('/api/v1/ad/test', { method: 'POST' }),
-    onSuccess: (r) => setLdapTest({ ok: r.ok, msg: r.ok ? 'Bind OK' : r.message ?? 'falha' }),
+    onSuccess: (r) => setLdapTest({ ok: r.ok, msg: r.ok ? 'Bind OK' : (r.message ?? 'falha') }),
     onError: (err) =>
       setLdapTest({ ok: false, msg: err instanceof ApiError ? err.message : 'Erro' }),
   });
@@ -116,7 +116,131 @@ export function SettingsPage() {
       </Panel>
 
       <ExceptionsPanel />
+
+      <ReprocessPanel />
     </div>
+  );
+}
+
+interface ReprocessResult {
+  adUsersDeleted: number;
+  effectiveMembersDeleted: number;
+  findingsEventsDeleted: number;
+  scansMarkedPending: number;
+}
+
+function ReprocessPanel() {
+  const qc = useQueryClient();
+  const [result, setResult] = useState<ReprocessResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const reprocess = useMutation({
+    mutationFn: () => api<ReprocessResult>('/api/v1/admin/reprocess-all', { method: 'POST' }),
+    onSuccess: (r) => {
+      setResult(r);
+      setError(null);
+      qc.invalidateQueries({ queryKey: ['machine'] });
+      qc.invalidateQueries({ queryKey: ['machines'] });
+      qc.invalidateQueries({ queryKey: ['findings'] });
+      qc.invalidateQueries({ queryKey: ['stats'] });
+      qc.invalidateQueries({ queryKey: ['severity-policies'] });
+      qc.invalidateQueries({ queryKey: ['institutional-groups'] });
+    },
+    onError: (err) => setError(err instanceof ApiError ? err.message : 'Erro'),
+  });
+
+  const handleClick = () => {
+    const ok = window.confirm(
+      'Tem certeza que deseja reprocessar todos os scans?\n\n' +
+        'O que vai acontecer:\n' +
+        '• O cache de usuários do AD será limpo (LDAP fresh no próximo run).\n' +
+        '• Todos os admins efetivos (effective_members) do último scan de cada máquina serão apagados.\n' +
+        '• Os eventos de admin (ADMIN_ADDED, ADMIN_REMOVED, ORPHAN_DETECTED) serão apagados.\n' +
+        '• O último scan de cada máquina será marcado como "pending" para o enricher reprocessar.\n\n' +
+        'Não toca em: tags, notas, exceções, política de severidade, grupos institucionais ou histórico de scans.\n\n' +
+        'O reprocessamento leva alguns minutos dependendo do tamanho do parque.',
+    );
+    if (ok) reprocess.mutate();
+  };
+
+  return (
+    <Panel title="Reprocessar scans">
+      <div style={{ color: 'var(--color-muted)', fontSize: 13, marginBottom: 12, lineHeight: 1.5 }}>
+        Force o enricher a refazer o último scan de cada máquina usando dados{' '}
+        <strong>frescos do AD</strong>. Útil após:
+        <ul style={{ margin: '6px 0', paddingLeft: 18 }}>
+          <li>
+            mudar a configuração LDAP em <code>.env</code>;
+          </li>
+          <li>
+            cadastrar exceções, grupos institucionais ou política de severidade que afetem casos
+            antigos cuja recomputação automática não cobriu;
+          </li>
+          <li>
+            limpar erros de expansão (<code>expansion_error</code>) acumulados.
+          </li>
+        </ul>
+        Operação atômica em transação — segura, mas reabre a fila do enricher. Em parques grandes
+        pode levar alguns minutos para o estado consolidar.
+      </div>
+
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={reprocess.isPending}
+        style={{
+          ...primaryBtn,
+          background: 'rgba(229, 138, 60, 0.18)',
+          color: '#f0a262',
+          border: '1px solid rgba(224, 138, 60, 0.4)',
+        }}
+      >
+        {reprocess.isPending ? 'Reprocessando...' : 'Reprocessar todos os scans'}
+      </button>
+
+      {error && (
+        <div style={{ color: 'var(--color-critical)', fontSize: 13, marginTop: 8 }}>{error}</div>
+      )}
+
+      {result && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            background: 'var(--color-surface-2)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 8,
+            fontSize: 13,
+            color: 'var(--color-muted)',
+            lineHeight: 1.6,
+          }}
+        >
+          <div style={{ color: '#79d28a', fontWeight: 600, marginBottom: 6 }}>
+            Reprocessamento iniciado
+          </div>
+          <div>
+            Scans marcados como pending:{' '}
+            <strong>{result.scansMarkedPending.toLocaleString('pt-BR')}</strong>
+          </div>
+          <div>
+            Effective members removidos:{' '}
+            <strong>{result.effectiveMembersDeleted.toLocaleString('pt-BR')}</strong>
+          </div>
+          <div>
+            Eventos de admin removidos:{' '}
+            <strong>{result.findingsEventsDeleted.toLocaleString('pt-BR')}</strong>
+          </div>
+          <div>
+            Cache de AD limpo:{' '}
+            <strong>{result.adUsersDeleted.toLocaleString('pt-BR')} registros</strong>
+          </div>
+          <div style={{ marginTop: 6, fontStyle: 'italic' }}>
+            O enricher já está processando — acompanhe em <code>/machines</code> ou no log do
+            container.
+          </div>
+        </div>
+      )}
+    </Panel>
   );
 }
 
@@ -171,7 +295,14 @@ function ExceptionsPanel() {
         Achados cobertos por uma exceção viram severidade <strong>info</strong>.
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr) auto', gap: 8, marginBottom: 16 }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(5, 1fr) auto',
+          gap: 8,
+          marginBottom: 16,
+        }}
+      >
         <select
           value={form.scope}
           onChange={(e) => setForm({ ...form, scope: e.target.value as typeof form.scope })}
@@ -244,7 +375,9 @@ function ExceptionsPanel() {
               <td style={tdStyle}>{it.reason}</td>
               <td style={tdStyle}>{it.createdBy}</td>
               <td style={tdStyle}>{new Date(it.createdAt).toLocaleString('pt-BR')}</td>
-              <td style={tdStyle}>{it.expiresAt ? new Date(it.expiresAt).toLocaleString('pt-BR') : '—'}</td>
+              <td style={tdStyle}>
+                {it.expiresAt ? new Date(it.expiresAt).toLocaleString('pt-BR') : '—'}
+              </td>
               <td style={tdStyle}>
                 <button
                   type="button"

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import ReactECharts from 'echarts-for-react';
 import { api } from '@web/lib/api.ts';
+import ReactECharts from 'echarts-for-react';
 import { SeverityBadge } from './SeverityBadge.tsx';
 
 interface DashboardStats {
@@ -14,10 +14,17 @@ interface DashboardStats {
     events_24h: number;
   };
   severityDistribution: { severity: string; c: number }[];
-  topUsers: {
+  topAdUsers: {
     sid: string;
     name: string;
     sam_account_name: string | null;
+    email: string | null;
+    department: string | null;
+    machine_count: number;
+  }[];
+  topLocalUsers: {
+    sid: string;
+    name: string;
     machine_count: number;
   }[];
   recentEvents: {
@@ -144,34 +151,49 @@ export function Dashboard() {
         </Panel>
 
         <Panel title="Top 10 — usuários AD com mais máquinas como admin">
-          <ReactECharts
-            style={{ height: 260 }}
-            option={{
-              tooltip: {},
-              grid: { left: 120, top: 10, right: 20, bottom: 20 },
-              xAxis: { type: 'value', axisLine: { lineStyle: { color: '#3a4254' } } },
-              yAxis: {
-                type: 'category',
-                data: data.topUsers.slice().reverse().map((u) => u.sam_account_name ?? u.name),
-                axisLabel: { color: '#cbd2e0' },
-              },
-              series: [
-                {
-                  type: 'bar',
-                  data: data.topUsers.slice().reverse().map((u) => u.machine_count),
-                  itemStyle: { color: '#4f8cff' },
-                },
-              ],
-            }}
-          />
+          <TopUsersHelpText />
+          {data.topAdUsers.length === 0 ? (
+            <EmptyTop />
+          ) : (
+            <ReactECharts
+              style={{ height: 260 }}
+              option={topUsersChartOption(
+                data.topAdUsers.map((u) => ({
+                  label: u.sam_account_name ?? u.name,
+                  value: u.machine_count,
+                  tooltip: [u.name, u.email ?? null, u.department ?? null]
+                    .filter(Boolean)
+                    .join(' · '),
+                })),
+                '#4f8cff',
+              )}
+            />
+          )}
         </Panel>
       </div>
 
+      <Panel title="Top 10 — contas locais com mais máquinas como admin">
+        <TopUsersHelpText />
+        {data.topLocalUsers.length === 0 ? (
+          <EmptyTop />
+        ) : (
+          <ReactECharts
+            style={{ height: 260 }}
+            option={topUsersChartOption(
+              data.topLocalUsers.map((u) => ({
+                label: u.name,
+                value: u.machine_count,
+                tooltip: u.sid,
+              })),
+              '#e6cf6b',
+            )}
+          />
+        )}
+      </Panel>
+
       <Panel title="Atividade recente — últimos 7 dias">
         {data.recentEvents.length === 0 ? (
-          <div style={{ padding: 12, color: 'var(--color-muted)' }}>
-            Sem atividade recente.
-          </div>
+          <div style={{ padding: 12, color: 'var(--color-muted)' }}>Sem atividade recente.</div>
         ) : (
           <table style={tableStyle}>
             <thead>
@@ -202,34 +224,81 @@ export function Dashboard() {
         )}
       </Panel>
 
-      <Panel title="Usuários top com admin no parque">
-        <table style={tableStyle}>
-          <thead>
-            <tr>
-              <th style={thStyle}>Usuário</th>
-              <th style={thStyle}>SAM</th>
-              <th style={thStyle}>SID</th>
-              <th style={{ ...thStyle, textAlign: 'right' }}>Máquinas</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.topUsers.map((u) => (
-              <tr key={u.sid}>
-                <td style={tdStyle}>{u.name}</td>
-                <td style={tdStyle}>{u.sam_account_name ?? '—'}</td>
-                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{u.sid}</td>
-                <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 600 }}>
-                  {u.machine_count}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Panel>
-
       <SeverityBadge value={null} />
     </div>
   );
+}
+
+function TopUsersHelpText() {
+  return (
+    <div
+      style={{
+        fontSize: 12,
+        color: 'var(--color-muted)',
+        marginBottom: 8,
+        lineHeight: 1.4,
+      }}
+    >
+      Filtros aplicados: habilitados, adições diretas (sem via grupo), sem service accounts, sem
+      exceções.
+    </div>
+  );
+}
+
+function EmptyTop() {
+  return (
+    <div style={{ padding: 16, color: 'var(--color-muted)', fontSize: 13 }}>
+      Nenhum admin encontrado com os filtros aplicados.
+    </div>
+  );
+}
+
+function topUsersChartOption(
+  rows: Array<{ label: string; value: number; tooltip?: string }>,
+  color: string,
+) {
+  const reversed = rows.slice().reverse();
+  return {
+    tooltip: {
+      trigger: 'axis' as const,
+      axisPointer: { type: 'shadow' as const },
+      formatter: (params: Array<{ dataIndex: number; value: number }>) => {
+        const p = params[0];
+        if (!p) return '';
+        const row = reversed[p.dataIndex];
+        if (!row) return '';
+        const subtitle = row.tooltip
+          ? `<div style="font-size:11px;opacity:.7">${row.tooltip}</div>`
+          : '';
+        return `<div style="font-weight:600">${row.label}</div>${subtitle}<div style="margin-top:4px">${row.value} máquina(s)</div>`;
+      },
+    },
+    grid: { left: 140, top: 10, right: 30, bottom: 24 },
+    xAxis: {
+      type: 'value' as const,
+      axisLine: { lineStyle: { color: '#3a4254' } },
+      axisLabel: { color: '#cbd2e0' },
+      minInterval: 1,
+    },
+    yAxis: {
+      type: 'category' as const,
+      data: reversed.map((r) => r.label),
+      axisLabel: { color: '#cbd2e0' },
+    },
+    series: [
+      {
+        type: 'bar' as const,
+        data: reversed.map((r) => r.value),
+        itemStyle: { color },
+        label: {
+          show: true,
+          position: 'right' as const,
+          color: '#cbd2e0',
+          fontSize: 11,
+        },
+      },
+    ],
+  };
 }
 
 function EventBadge({ kind }: { kind: string }) {

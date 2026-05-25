@@ -9,6 +9,7 @@ import type { LdapPool } from '@server/enricher/ldap-client.ts';
 import authPlugin from '@server/http/plugins/auth.ts';
 import { registerErrorHandler } from '@server/http/plugins/error-handler.ts';
 import { registerAdRoutes } from '@server/http/routes/ad.ts';
+import { registerAdminReprocessRoutes } from '@server/http/routes/admin-reprocess.ts';
 import { registerAuthRoutes } from '@server/http/routes/auth.ts';
 import { registerEventsRoutes } from '@server/http/routes/events.ts';
 import { registerExceptionsRoutes } from '@server/http/routes/exceptions.ts';
@@ -111,6 +112,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   });
   await app.register(async (scope) => {
     await registerInstitutionalGroupsRoutes(scope, { db: opts.db });
+  });
+  await app.register(async (scope) => {
+    await registerAdminReprocessRoutes(scope, { db: opts.db });
   });
   await app.register(async (scope) => {
     await registerExportRoutes(scope, { db: opts.db });

@@ -1,6 +1,6 @@
+import type { DbClient } from '@server/db/client.ts';
 import { sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import type { DbClient } from '@server/db/client.ts';
 
 export async function registerStatsRoutes(
   app: FastifyInstance,
@@ -50,7 +50,11 @@ export async function registerStatsRoutes(
       GROUP BY em.severity;
     `);
 
-    const topUsers = await deps.db.db.execute(sql`
+    // Top 10 — mesmos filtros da aba "Por usuário" em /findings:
+    //   source = X, sem exception, sem service account, habilitado, direto.
+    // Sem esses filtros o top vira lista de contas de admin/service com
+    // ~800 máquinas (ruído). Com eles aparece quem realmente vale auditar.
+    const topAdUsers = await deps.db.db.execute(sql`
       WITH latest_scan AS (
         SELECT DISTINCT ON (machine_id) machine_id, id
         FROM scan_runs
@@ -60,13 +64,41 @@ export async function registerStatsRoutes(
       SELECT em.sid,
              COALESCE(au.display_name, em.name, em.sid) AS name,
              au.sam_account_name,
+             au.email,
+             au.department,
              COUNT(DISTINCT em.machine_id)::int AS machine_count
       FROM effective_members em
       JOIN latest_scan ls ON ls.id = em.scan_run_id
       LEFT JOIN ad_users au ON au.sid = em.sid
-      WHERE em.source IN ('AD_USER','ORPHAN_SID')
-      GROUP BY em.sid, au.display_name, em.name, au.sam_account_name
-      ORDER BY machine_count DESC
+      WHERE em.source = 'AD_USER'
+        AND em.matched_exception_id IS NULL
+        AND COALESCE(em.is_service_account, false) = false
+        AND COALESCE(em.ad_enabled, true) = true
+        AND em.via_group IS NULL
+      GROUP BY em.sid, au.display_name, em.name, au.sam_account_name, au.email, au.department
+      ORDER BY machine_count DESC, name ASC
+      LIMIT 10;
+    `);
+
+    const topLocalUsers = await deps.db.db.execute(sql`
+      WITH latest_scan AS (
+        SELECT DISTINCT ON (machine_id) machine_id, id
+        FROM scan_runs
+        WHERE expansion_status = 'done'
+        ORDER BY machine_id, collected_at DESC
+      )
+      SELECT em.sid,
+             COALESCE(em.name, em.sid) AS name,
+             COUNT(DISTINCT em.machine_id)::int AS machine_count
+      FROM effective_members em
+      JOIN latest_scan ls ON ls.id = em.scan_run_id
+      WHERE em.source = 'LOCAL_USER'
+        AND em.matched_exception_id IS NULL
+        AND COALESCE(em.is_service_account, false) = false
+        AND COALESCE(em.ad_enabled, true) = true
+        AND em.via_group IS NULL
+      GROUP BY em.sid, em.name
+      ORDER BY machine_count DESC, name ASC
       LIMIT 10;
     `);
 
@@ -89,7 +121,8 @@ export async function registerStatsRoutes(
     reply.send({
       cards: dash.rows[0] ?? {},
       severityDistribution: severityDist.rows,
-      topUsers: topUsers.rows,
+      topAdUsers: topAdUsers.rows,
+      topLocalUsers: topLocalUsers.rows,
       recentEvents: recentEvents.rows,
     });
   });
