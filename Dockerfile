@@ -31,6 +31,8 @@ COPY --from=builder /app/dist/web ./dist/web
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
 COPY --from=builder /app/tsconfig.server.json ./tsconfig.server.json
+# scripts/ — backfills e utilitários rodados via `npm run` dentro do container
+COPY scripts ./scripts
 
 EXPOSE 3010
 

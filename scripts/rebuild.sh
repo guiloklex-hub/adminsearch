@@ -71,12 +71,10 @@ log "Build da imagem do app${NO_CACHE:+ (sem cache)}"
 # shellcheck disable=SC2086
 docker compose build $NO_CACHE adminsearch
 
-log "Aplicando migrations pendentes"
-if docker compose run --rm adminsearch npm run db:migrate; then
-  ok "migrations OK"
-else
-  warn "db:migrate retornou erro — verifique se há migrations novas em drizzle/."
-fi
+# Nota: este projeto NÃO usa `drizzle-kit migrate`. As migrations em
+# drizzle/*.sql são aplicadas automaticamente no boot do servidor pelo
+# runner em src/server/db/migrate.ts (chamado em src/server/index.ts).
+# Basta recriar o container — qualquer SQL novo é aplicado idempotente.
 
 log "Recriando container do app"
 docker compose up -d adminsearch
