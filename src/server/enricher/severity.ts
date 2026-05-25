@@ -113,3 +113,79 @@ export function classifySeverity(input: SeverityInput): Severity {
 
   return 'medium';
 }
+
+/**
+ * Versão "achatada" dos sinais que `classifySeverity` consome — corresponde
+ * 1:1 às colunas persistidas em `effective_members`. Permite explicar a
+ * razão da severity sem precisar recarregar o `CachedAdUser`.
+ */
+export interface SeverityExplainInput {
+  sid: string;
+  source: MemberSource;
+  viaGroup: string | null;
+  viaGroupSid: string | null;
+  adEnabled: boolean | null;
+  isServiceAccount: boolean;
+  hasMatchedException: boolean;
+}
+
+/**
+ * Devolve a justificativa textual (em pt-BR) da severidade atribuída a um
+ * membro. A árvore de decisão acompanha exatamente a de `classifySeverity`
+ * — qualquer mudança nas regras tem que refletir nas duas.
+ */
+export function explainSeverity(input: SeverityExplainInput): string {
+  if (input.hasMatchedException) {
+    return 'Coberto por uma exception ativa — validado e silenciado em /settings.';
+  }
+  if (
+    (input.source === 'WELL_KNOWN' || isWellKnownSid(input.sid)) &&
+    !isExpandableWellKnownGroupSid(input.sid)
+  ) {
+    return 'Built-in local do Windows (ex.: BUILTIN\\Administrators, NT AUTHORITY\\SYSTEM) — estado esperado.';
+  }
+  if (input.source === 'WELL_KNOWN' && isExpandableWellKnownGroupSid(input.sid)) {
+    return 'Grupo built-in do domínio (Domain Admins, Enterprise Admins, etc.) adicionado direto em Administrators local — toda a equipe de TI vira admin do parque sem auditoria.';
+  }
+
+  const isDirect = input.viaGroup === null;
+  const inheritedFromBuiltinDomainGroup =
+    !isDirect && !!input.viaGroupSid && isExpandableWellKnownGroupSid(input.viaGroupSid);
+
+  if (input.source === 'ORPHAN_SID') {
+    return isDirect
+      ? 'SID órfão adicionado direto: a conta foi deletada no AD mas continua como admin nominal nesta máquina.'
+      : 'SID não resolvido herdado via grupo — provavelmente um grupo do AD que o LDAP não conseguiu expandir (ruído, não ameaça real).';
+  }
+
+  if (input.source === 'AD_USER') {
+    const enabled = input.adEnabled !== false;
+    const isService = input.isServiceAccount;
+
+    if (!enabled) {
+      return isDirect
+        ? 'Conta AD desabilitada adicionada direto — resíduo de ex-funcionário ainda com privilégio nesta máquina específica.'
+        : `Conta AD desabilitada ainda no grupo "${input.viaGroup}" — basta tirar do grupo no AD para limpar várias máquinas de uma vez.`;
+    }
+    if (isService) {
+      if (inheritedFromBuiltinDomainGroup) {
+        return `Service account herdando via grupo built-in do domínio (${input.viaGroup}) — admin de domínio numa estação é genuinamente preocupante.`;
+      }
+      return isDirect
+        ? 'Service account adicionada direto — vale revisar se o privilégio nesta máquina específica é intencional.'
+        : `Service account herdando via grupo "${input.viaGroup}" — geralmente é o padrão esperado.`;
+    }
+    if (inheritedFromBuiltinDomainGroup) {
+      return `Conta AD habilitada herdando via grupo built-in do domínio (${input.viaGroup}) — admin de domínio na estação requer revisão.`;
+    }
+    return isDirect
+      ? 'Conta AD habilitada adicionada direto na máquina — fora do processo institucional, requer revisão.'
+      : `Conta AD habilitada herdando via grupo "${input.viaGroup}" — estado canônico do processo institucional.`;
+  }
+
+  if (input.source === 'LOCAL_USER') {
+    return 'Conta local customizada (não built-in) — não passa pelo controle do AD, vale revisar se ainda é necessária.';
+  }
+
+  return 'Cenário fora das regras mapeadas — revisar manualmente.';
+}

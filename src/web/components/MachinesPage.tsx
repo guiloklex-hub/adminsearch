@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
 import { api, buildQuery } from '@web/lib/api.ts';
+import { useEffect, useState } from 'react';
+import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 import { Pagination } from './Pagination.tsx';
 import { SeverityBadge } from './SeverityBadge.tsx';
-import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 
 interface MachineRow {
   id: string;
@@ -87,7 +87,7 @@ export function MachinesPage({
                 fontSize: 12,
               }}
             >
-              ≥ <SeverityBadge value={s} />
+              <SeverityBadge value={s} />
             </button>
           ))}
         </div>
@@ -138,11 +138,7 @@ export function MachinesPage({
             </thead>
             <tbody>
               {data?.items.map((m) => (
-                <tr
-                  key={m.id}
-                  onClick={() => onSelect(m.id)}
-                  style={{ cursor: 'pointer' }}
-                >
+                <tr key={m.id} onClick={() => onSelect(m.id)} style={{ cursor: 'pointer' }}>
                   <td style={tdStyle}>
                     <div style={{ fontWeight: 600 }}>{m.dnsHostName}</div>
                     <div style={{ color: 'var(--color-muted)', fontSize: 12 }}>{m.netBiosName}</div>
@@ -177,7 +173,10 @@ export function MachinesPage({
               ))}
               {data && data.items.length === 0 && (
                 <tr>
-                  <td colSpan={8} style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}>
+                  <td
+                    colSpan={8}
+                    style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}
+                  >
                     Nenhuma máquina encontrada.
                   </td>
                 </tr>

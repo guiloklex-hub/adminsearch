@@ -1,8 +1,12 @@
-import { and, desc, eq, ilike, inArray, lt, max, or, sql } from 'drizzle-orm';
-import type { FastifyInstance } from 'fastify';
-import { z } from 'zod';
 import type { DbClient } from '@server/db/client.ts';
 import { effectiveMembers, findingsEvents, machines, scanRuns } from '@server/db/schema.ts';
+import { type MemberSource, explainSeverity } from '@server/enricher/severity.ts';
+import { and, desc, eq, inArray, max, sql } from 'drizzle-orm';
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+
+const SEVERITY_VALUES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+type Severity = (typeof SEVERITY_VALUES)[number];
 
 const ListQuery = z.object({
   q: z.string().trim().max(120).optional(),
@@ -11,7 +15,14 @@ const ListQuery = z.object({
   severity: z
     .string()
     .optional()
-    .transform((v) => (v ? v.split(',').map((s) => s.trim()) : undefined)),
+    .transform((v) =>
+      v
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s): s is Severity => (SEVERITY_VALUES as readonly string[]).includes(s))
+        : undefined,
+    ),
   staleDays: z.coerce.number().int().min(0).max(365).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
@@ -29,6 +40,7 @@ const SEVERITY_RANK: Record<string, number> = {
   high: 3,
   critical: 4,
 };
+const RANK_TO_NAME = ['info', 'low', 'medium', 'high', 'critical'] as const;
 
 export async function registerMachinesRoutes(
   app: FastifyInstance,
@@ -42,61 +54,49 @@ export async function registerMachinesRoutes(
     const offset = (q.page - 1) * q.pageSize;
     const now = new Date();
 
-    const filters = [];
+    const baseFilters: ReturnType<typeof sql>[] = [];
     if (q.q) {
-      filters.push(
-        or(
-          ilike(machines.dnsHostName, `%${q.q}%`),
-          ilike(machines.netBiosName, `%${q.q}%`),
-          ilike(machines.lastLoggedUser, `%${q.q}%`),
-        ),
+      const pat = `%${q.q}%`;
+      baseFilters.push(
+        sql`(m.dns_host_name ILIKE ${pat} OR m.net_bios_name ILIKE ${pat} OR m.last_logged_user ILIKE ${pat})`,
       );
     }
-    if (q.domain) filters.push(eq(machines.domain, q.domain));
-    if (q.tag) filters.push(sql`${q.tag} = ANY(${machines.tags})`);
+    if (q.domain) baseFilters.push(sql`m.domain = ${q.domain}`);
+    if (q.tag) baseFilters.push(sql`${q.tag} = ANY(m.tags)`);
     if (q.staleDays) {
       const cutoff = new Date(now.getTime() - q.staleDays * 86400_000);
-      filters.push(lt(machines.lastSeenAt, cutoff));
+      baseFilters.push(sql`m.last_seen_at < ${cutoff}`);
     }
 
-    const where = filters.length ? and(...filters) : undefined;
+    const baseWhere = baseFilters.length ? sql`WHERE ${sql.join(baseFilters, sql` AND `)}` : sql``;
 
-    const rowsQuery = deps.db.db
-      .select({
-        id: machines.id,
-        dnsHostName: machines.dnsHostName,
-        netBiosName: machines.netBiosName,
-        domain: machines.domain,
-        osCaption: machines.osCaption,
-        osVersion: machines.osVersion,
-        tags: machines.tags,
-        lastSeenAt: machines.lastSeenAt,
-        lastLoggedUser: machines.lastLoggedUser,
-      })
-      .from(machines)
-      .orderBy(desc(machines.lastSeenAt))
-      .limit(q.pageSize)
-      .offset(offset);
+    // Filtro de severidade: OR exato sobre o max_rank computado por máquina.
+    // Aplicado em SQL antes de LIMIT/OFFSET para que o total reflita o filtro.
+    const ranks =
+      q.severity?.map((s) => SEVERITY_RANK[s]).filter((r): r is number => r != null) ?? [];
+    const severityWhere =
+      ranks.length > 0
+        ? sql`WHERE COALESCE(s.max_rank, -1) IN (${sql.join(
+            ranks.map((r) => sql`${r}`),
+            sql`, `,
+          )})`
+        : sql``;
 
-    const totalQuery = deps.db.db
-      .select({ c: sql<number>`count(*)::int` })
-      .from(machines);
-
-    const rows = await (where ? rowsQuery.where(where) : rowsQuery);
-    const [total] = await (where ? totalQuery.where(where) : totalQuery);
-
-    // Para cada máquina, pegar a severidade máxima do último scan e contagem de admins
-    const machineIds = rows.map((r) => r.id);
-    let summary: Record<string, { maxSeverity: string; adminCount: number }> = {};
-    if (machineIds.length > 0) {
-      const latest = await deps.db.db.execute(sql`
-        WITH latest_scan AS (
-          SELECT DISTINCT ON (machine_id) machine_id, id
-          FROM scan_runs
-          WHERE machine_id = ANY(${sql.raw(`ARRAY[${machineIds.map((id) => `'${id}'`).join(',')}]::uuid[]`)})
-            AND expansion_status = 'done'
-          ORDER BY machine_id, collected_at DESC
-        )
+    const result = await deps.db.db.execute(sql`
+      WITH base AS (
+        SELECT m.id, m.dns_host_name, m.net_bios_name, m.domain, m.os_caption,
+               m.os_version, m.tags, m.last_seen_at, m.last_logged_user
+        FROM machines m
+        ${baseWhere}
+      ),
+      latest_scan AS (
+        SELECT DISTINCT ON (machine_id) machine_id, id
+        FROM scan_runs
+        WHERE expansion_status = 'done'
+          AND machine_id IN (SELECT id FROM base)
+        ORDER BY machine_id, collected_at DESC
+      ),
+      sev AS (
         SELECT em.machine_id,
                COUNT(*)::int AS admin_count,
                MAX(CASE em.severity
@@ -105,41 +105,56 @@ export async function registerMachinesRoutes(
                      WHEN 'medium' THEN 2
                      WHEN 'low' THEN 1
                      ELSE 0
-                   END) AS max_severity_rank
+                   END) AS max_rank
         FROM effective_members em
         JOIN latest_scan ls ON ls.id = em.scan_run_id
-        GROUP BY em.machine_id;
-      `);
+        GROUP BY em.machine_id
+      ),
+      enriched AS (
+        SELECT b.*, COALESCE(s.admin_count, 0) AS admin_count, s.max_rank
+        FROM base b
+        LEFT JOIN sev s ON s.machine_id = b.id
+        ${severityWhere}
+      )
+      SELECT *, COUNT(*) OVER ()::int AS total_count
+      FROM enriched
+      ORDER BY last_seen_at DESC
+      LIMIT ${q.pageSize} OFFSET ${offset};
+    `);
 
-      const ranks = ['info', 'low', 'medium', 'high', 'critical'];
-      for (const r of latest.rows as Array<{
-        machine_id: string;
-        admin_count: number;
-        max_severity_rank: number;
-      }>) {
-        summary[r.machine_id] = {
-          maxSeverity: ranks[r.max_severity_rank] ?? 'info',
-          adminCount: r.admin_count,
-        };
-      }
-    }
+    const rows = result.rows as Array<{
+      id: string;
+      dns_host_name: string;
+      net_bios_name: string;
+      domain: string | null;
+      os_caption: string | null;
+      os_version: string | null;
+      tags: string[] | null;
+      last_seen_at: Date | string;
+      last_logged_user: string | null;
+      admin_count: number;
+      max_rank: number | null;
+      total_count: number;
+    }>;
 
-    let result = rows.map((r) => ({
-      ...r,
-      maxSeverity: summary[r.id]?.maxSeverity ?? null,
-      adminCount: summary[r.id]?.adminCount ?? 0,
+    const total = rows[0]?.total_count ?? 0;
+    const items = rows.map((r) => ({
+      id: r.id,
+      dnsHostName: r.dns_host_name,
+      netBiosName: r.net_bios_name,
+      domain: r.domain,
+      osCaption: r.os_caption,
+      osVersion: r.os_version,
+      tags: r.tags,
+      lastSeenAt: r.last_seen_at,
+      lastLoggedUser: r.last_logged_user,
+      maxSeverity: r.max_rank != null ? RANK_TO_NAME[r.max_rank] : null,
+      adminCount: r.admin_count ?? 0,
     }));
 
-    if (q.severity && q.severity.length > 0) {
-      const minRank = Math.min(...q.severity.map((s) => SEVERITY_RANK[s] ?? 99));
-      result = result.filter((r) =>
-        r.maxSeverity ? (SEVERITY_RANK[r.maxSeverity] ?? -1) >= minRank : false,
-      );
-    }
-
     reply.send({
-      items: result,
-      total: total?.c ?? 0,
+      items,
+      total,
       page: q.page,
       pageSize: q.pageSize,
     });
@@ -162,11 +177,49 @@ export async function registerMachinesRoutes(
       orderBy: [desc(scanRuns.collectedAt)],
     });
 
-    const admins = latestScan
+    const rawAdmins = latestScan
       ? await deps.db.db
           .select()
           .from(effectiveMembers)
           .where(eq(effectiveMembers.scanRunId, latestScan.id))
+      : [];
+
+    const admins = rawAdmins.map((a) => ({
+      ...a,
+      severityReason: explainSeverity({
+        sid: a.sid,
+        source: a.source as MemberSource,
+        viaGroup: a.viaGroup,
+        viaGroupSid: a.viaGroupSid,
+        adEnabled: a.adEnabled,
+        isServiceAccount: a.isServiceAccount,
+        hasMatchedException: a.matchedExceptionId !== null,
+      }),
+    }));
+
+    const severityRank: Record<string, number> = {
+      info: 0,
+      low: 1,
+      medium: 2,
+      high: 3,
+      critical: 4,
+    };
+    const rankedAdmins = [...admins].sort(
+      (a, b) => (severityRank[b.severity] ?? -1) - (severityRank[a.severity] ?? -1),
+    );
+    const maxSeverity = rankedAdmins[0]?.severity ?? null;
+    // Os "drivers" são as linhas que justificam a severity máxima da máquina —
+    // tudo que está no topo do ranking (mesma severity do máximo).
+    const severityDrivers = maxSeverity
+      ? rankedAdmins
+          .filter((a) => a.severity === maxSeverity)
+          .slice(0, 5)
+          .map((a) => ({
+            sid: a.sid,
+            name: a.name,
+            viaGroup: a.viaGroup,
+            reason: a.severityReason,
+          }))
       : [];
 
     const events = await deps.db.db
@@ -192,7 +245,15 @@ export async function registerMachinesRoutes(
       .orderBy(desc(scanRuns.collectedAt))
       .limit(20);
 
-    reply.send({ machine, latestScan, admins, events, scanHistory });
+    reply.send({
+      machine,
+      latestScan,
+      admins,
+      maxSeverity,
+      severityDrivers,
+      events,
+      scanHistory,
+    });
   });
 
   // PATCH /api/v1/machines/:id

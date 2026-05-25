@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
 import { api } from '@web/lib/api.ts';
+import { useEffect, useState } from 'react';
+import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 import { RemediationModal, type RemediationTarget } from './RemediationModal.tsx';
 import { SeverityBadge } from './SeverityBadge.tsx';
-import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 
 interface MachineDetail {
   machine: {
@@ -33,7 +33,15 @@ interface MachineDetail {
     source: string;
     viaGroup: string | null;
     severity: string;
+    severityReason: string;
     adEnabled: boolean | null;
+  }>;
+  maxSeverity: string | null;
+  severityDrivers: Array<{
+    sid: string;
+    name: string | null;
+    viaGroup: string | null;
+    reason: string;
   }>;
   events: Array<{
     id: string;
@@ -115,10 +123,17 @@ export function MachineDetail({ id, onBack }: { id: string; onBack: () => void }
         ← Voltar
       </button>
 
-      <h1 style={{ margin: 0 }}>{m.dnsHostName}</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h1 style={{ margin: 0 }}>{m.dnsHostName}</h1>
+        {data.maxSeverity && <SeverityBadge value={data.maxSeverity} />}
+      </div>
       <div style={{ color: 'var(--color-muted)' }}>
         {m.netBiosName} · {m.domain ?? 'workgroup'} · {m.osCaption}
       </div>
+
+      {data.maxSeverity && data.maxSeverity !== 'info' && data.severityDrivers.length > 0 && (
+        <SeverityReasonPanel severity={data.maxSeverity} drivers={data.severityDrivers} />
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <Panel title="Identidade">
@@ -144,15 +159,14 @@ export function MachineDetail({ id, onBack }: { id: string; onBack: () => void }
             label="Visto pela 1ª vez"
             value={new Date(m.firstSeenAt).toLocaleString('pt-BR')}
           />
-          <Field
-            label="Último contato"
-            value={new Date(m.lastSeenAt).toLocaleString('pt-BR')}
-          />
+          <Field label="Último contato" value={new Date(m.lastSeenAt).toLocaleString('pt-BR')} />
         </Panel>
       </div>
 
       <Panel title="Tags & Notas">
-        <label style={{ fontSize: 12, color: 'var(--color-muted)' }}>Tags (separadas por vírgula)</label>
+        <label style={{ fontSize: 12, color: 'var(--color-muted)' }}>
+          Tags (separadas por vírgula)
+        </label>
         <input
           value={tagsInput}
           onChange={(e) => setTagsInput(e.target.value)}
@@ -211,7 +225,7 @@ export function MachineDetail({ id, onBack }: { id: string; onBack: () => void }
                     {a.adEnabled === null ? '—' : a.adEnabled ? 'sim' : 'NÃO'}
                   </td>
                   <td style={tdStyle}>
-                    <SeverityBadge value={a.severity} />
+                    <SeverityBadge value={a.severity} description={a.severityReason} />
                   </td>
                   <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11 }}>{a.sid}</td>
                   <td style={tdStyle}>
@@ -367,3 +381,52 @@ const inputStyle: React.CSSProperties = {
   color: 'var(--color-text)',
   fontSize: 14,
 };
+
+const SEVERITY_LABEL: Record<string, string> = {
+  critical: 'Crítica',
+  high: 'Alta',
+  medium: 'Média',
+  low: 'Baixa',
+  info: 'Info',
+};
+
+const SEVERITY_ACCENT: Record<string, { bg: string; border: string }> = {
+  critical: { bg: 'rgba(229, 69, 69, 0.10)', border: 'rgba(229, 69, 69, 0.45)' },
+  high: { bg: 'rgba(224, 138, 60, 0.10)', border: 'rgba(224, 138, 60, 0.45)' },
+  medium: { bg: 'rgba(212, 181, 65, 0.10)', border: 'rgba(212, 181, 65, 0.45)' },
+  low: { bg: 'rgba(91, 155, 229, 0.10)', border: 'rgba(91, 155, 229, 0.45)' },
+};
+
+function SeverityReasonPanel({
+  severity,
+  drivers,
+}: {
+  severity: string;
+  drivers: Array<{ sid: string; name: string | null; viaGroup: string | null; reason: string }>;
+}) {
+  const accent = SEVERITY_ACCENT[severity] ?? SEVERITY_ACCENT.medium;
+  const label = SEVERITY_LABEL[severity] ?? severity;
+  return (
+    <div
+      style={{
+        background: accent.bg,
+        border: `1px solid ${accent.border}`,
+        borderRadius: 12,
+        padding: 16,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+      }}
+    >
+      <div style={{ fontWeight: 600 }}>Por que esta máquina é {label}?</div>
+      <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {drivers.map((d) => (
+          <li key={`${d.sid}-${d.viaGroup ?? 'direct'}`} style={{ fontSize: 13, lineHeight: 1.5 }}>
+            <strong>{d.name ?? d.sid}</strong>
+            {d.viaGroup ? ` (via ${d.viaGroup})` : ' (direto)'} — {d.reason}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
