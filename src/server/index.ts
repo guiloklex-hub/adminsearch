@@ -2,6 +2,7 @@ import { createDb } from '@server/db/client.ts';
 import { runMigrations } from '@server/db/migrate.ts';
 import { Enricher } from '@server/enricher/index.ts';
 import { LdapPool } from '@server/enricher/ldap-client.ts';
+import { initSeverityPolicyCache } from '@server/enricher/severity-policy-cache.ts';
 import { ldapConfigured, loadEnv } from '@server/env.ts';
 import { buildApp } from '@server/http/app.ts';
 import { createLogger } from '@server/logger.ts';
@@ -18,6 +19,10 @@ async function main(): Promise<void> {
   const db = createDb({ url: env.DATABASE_URL });
   await runMigrations(db.pool);
   logger.info('migrações aplicadas');
+
+  const policyCache = initSeverityPolicyCache(db);
+  await policyCache.ensureLoaded();
+  logger.info('cache de política de severidade carregado');
 
   let ldap: LdapPool | null = null;
   let enricher: Enricher | null = null;

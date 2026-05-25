@@ -138,6 +138,7 @@ export const effectiveMembers = pgTable(
     adEnabled: boolean('ad_enabled'),
     isServiceAccount: boolean('is_service_account').notNull().default(false),
     severity: text('severity').notNull(), // critical | high | medium | low | info
+    reasonCode: text('reason_code'), // nullable até o backfill rodar; depois NOT NULL
     matchedExceptionId: uuid('matched_exception_id'),
   },
   (t) => ({
@@ -145,8 +146,18 @@ export const effectiveMembers = pgTable(
     machineIdx: index('effective_members_machine_idx').on(t.machineId, t.source),
     sidIdx: index('effective_members_sid_idx').on(t.sid),
     severityIdx: index('effective_members_severity_idx').on(t.severity),
+    reasonIdx: index('effective_members_reason_idx').on(t.reasonCode),
   }),
 );
+
+/* ---------- Política de severidade (override global por motivo) ---------- */
+
+export const severityPolicies = pgTable('severity_policies', {
+  reasonCode: text('reason_code').primaryKey(),
+  severityOverride: text('severity_override').notNull(), // critical|high|medium|low|info
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: text('updated_by').notNull(),
+});
 
 /* ---------- Eventos (diff entre scans consecutivos) ---------- */
 

@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
-import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 import type { DbClient } from '@server/db/client.ts';
 import type { LdapPool } from '@server/enricher/ldap-client.ts';
 import authPlugin from '@server/http/plugins/auth.ts';
@@ -22,7 +21,9 @@ import {
   registerRemediationResultRoute,
   registerRemediationRoutes,
 } from '@server/http/routes/remediation.ts';
+import { registerSeverityPoliciesRoutes } from '@server/http/routes/severity-policies.ts';
 import { registerStatsRoutes } from '@server/http/routes/stats.ts';
+import Fastify, { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -103,6 +104,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   });
   await app.register(async (scope) => {
     await registerExceptionsRoutes(scope, { db: opts.db });
+  });
+  await app.register(async (scope) => {
+    await registerSeverityPoliciesRoutes(scope, { db: opts.db });
   });
   await app.register(async (scope) => {
     await registerExportRoutes(scope, { db: opts.db });

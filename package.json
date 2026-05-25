@@ -28,7 +28,8 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "backfill:reason-codes": "tsx scripts/backfill-reason-codes.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

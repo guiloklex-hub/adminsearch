@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react';
 import { api } from '@web/lib/api.ts';
+import type { ReactNode } from 'react';
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard' },
@@ -7,6 +7,7 @@ const NAV = [
   { id: 'findings', label: 'Achados' },
   { id: 'events', label: 'Eventos' },
   { id: 'remediation', label: 'A executar' },
+  { id: 'severity-policy', label: 'Política de Severidade' },
   { id: 'settings', label: 'Configurações' },
 ] as const;
 
@@ -36,9 +37,7 @@ export function Layout({
           gap: 16,
         }}
       >
-        <div style={{ fontWeight: 800, fontSize: 18, letterSpacing: 0.5 }}>
-          adminsearch
-        </div>
+        <div style={{ fontWeight: 800, fontSize: 18, letterSpacing: 0.5 }}>adminsearch</div>
 
         <nav style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {NAV.map((item) => (

@@ -10,7 +10,13 @@ import { AdUserCache } from '@server/enricher/ad-user-cache.ts';
 import { findMatchingException } from '@server/enricher/exception-matcher.ts';
 import { type ExpandedGroupResult, expandGroupBySid } from '@server/enricher/expand-group.ts';
 import type { LdapPool } from '@server/enricher/ldap-client.ts';
-import { type MemberSource, type Severity, classifySeverity } from '@server/enricher/severity.ts';
+import { getSeverityPolicyCache } from '@server/enricher/severity-policy-cache.ts';
+import {
+  type MemberSource,
+  type ReasonCode,
+  type Severity,
+  classifySeverity,
+} from '@server/enricher/severity.ts';
 import {
   isDomainOrLocalAccountSid,
   isExpandableWellKnownGroupSid,
@@ -37,7 +43,22 @@ interface EffectiveDraft {
   adEnabled: boolean | null;
   isServiceAccount: boolean;
   severity: Severity;
+  reasonCode: ReasonCode;
   matchedExceptionId: string | null;
+}
+
+/**
+ * Wrapper que aplica o override de política sobre o resultado default
+ * de `classifySeverity`. Recarrega o cache na primeira chamada de cada
+ * `processOne()`.
+ */
+function classifyWithPolicy(input: Parameters<typeof classifySeverity>[0]): {
+  severity: Severity;
+  reasonCode: ReasonCode;
+} {
+  const { severity: defaultSeverity, reasonCode } = classifySeverity(input);
+  const overridden = getSeverityPolicyCache().resolve(reasonCode);
+  return { severity: overridden ?? defaultSeverity, reasonCode };
 }
 
 export class Enricher {
@@ -211,6 +232,7 @@ export class Enricher {
         adEnabled: cached?.enabled ?? null,
         isServiceAccount: cached?.isServiceAccount ?? false,
         severity: 'medium',
+        reasonCode: 'FALLBACK',
         matchedExceptionId: null,
       };
 
@@ -222,7 +244,7 @@ export class Enricher {
         groupCn: null,
       });
       draft.matchedExceptionId = exc?.id ?? null;
-      draft.severity = classifySeverity({
+      const directClass = classifyWithPolicy({
         sid: draft.sid,
         source,
         hasMatchedException: !!exc,
@@ -230,6 +252,8 @@ export class Enricher {
         viaGroup: null,
         viaGroupSid: null,
       });
+      draft.severity = directClass.severity;
+      draft.reasonCode = directClass.reasonCode;
 
       drafts.push(draft);
     }
@@ -242,6 +266,14 @@ export class Enricher {
       // Built-in NAO expansivel (BUILTIN\*, NT AUTHORITY\*): so registra
       // a entrada do grupo, sem expandir via LDAP.
       if (isWellKnownSid(groupSid) && !isExpandableWellKnownGroupSid(groupSid)) {
+        const builtinClass = classifyWithPolicy({
+          sid: groupSid,
+          source: 'WELL_KNOWN',
+          hasMatchedException: false,
+          adUser: null,
+          viaGroup: null,
+          viaGroupSid: null,
+        });
         drafts.push({
           sid: groupSid,
           name: rawName ?? wellKnownName(groupSid),
@@ -250,7 +282,8 @@ export class Enricher {
           viaGroupSid: null,
           adEnabled: null,
           isServiceAccount: false,
-          severity: 'low',
+          severity: builtinClass.severity,
+          reasonCode: builtinClass.reasonCode,
           matchedExceptionId: null,
         });
         continue;
@@ -274,6 +307,14 @@ export class Enricher {
       // (Domain Admins, Enterprise Admins...), e' WELL_KNOWN critical.
       const isBuiltinDomain = isExpandableWellKnownGroupSid(groupSid);
       if (isBuiltinDomain) {
+        const builtinDomainClass = classifyWithPolicy({
+          sid: groupSid,
+          source: 'WELL_KNOWN',
+          hasMatchedException: false,
+          adUser: null,
+          viaGroup: null,
+          viaGroupSid: null,
+        });
         drafts.push({
           sid: groupSid,
           name: expanded?.groupCn ?? rawName ?? wellKnownName(groupSid),
@@ -282,14 +323,8 @@ export class Enricher {
           viaGroupSid: null,
           adEnabled: null,
           isServiceAccount: false,
-          severity: classifySeverity({
-            sid: groupSid,
-            source: 'WELL_KNOWN',
-            hasMatchedException: false,
-            adUser: null,
-            viaGroup: null,
-            viaGroupSid: null,
-          }),
+          severity: builtinDomainClass.severity,
+          reasonCode: builtinDomainClass.reasonCode,
           matchedExceptionId: null,
         });
       }
@@ -298,6 +333,14 @@ export class Enricher {
         // Grupo nao built-in que falhou a expansao via LDAP. So registra
         // se nao for built-in (esse caso ja registrou WELL_KNOWN acima).
         if (!isBuiltinDomain) {
+          const orphanClass = classifyWithPolicy({
+            sid: groupSid,
+            source: 'ORPHAN_SID',
+            hasMatchedException: false,
+            adUser: null,
+            viaGroup: null,
+            viaGroupSid: null,
+          });
           drafts.push({
             sid: groupSid,
             name: rawName,
@@ -306,7 +349,8 @@ export class Enricher {
             viaGroupSid: null,
             adEnabled: null,
             isServiceAccount: false,
-            severity: 'critical',
+            severity: orphanClass.severity,
+            reasonCode: orphanClass.reasonCode,
             matchedExceptionId: null,
           });
         }
@@ -327,6 +371,14 @@ export class Enricher {
           groupSid: expanded.groupSid,
           groupCn: expanded.groupCn,
         });
+        const expandedClass = classifyWithPolicy({
+          sid: u.sid,
+          source,
+          hasMatchedException: !!exc,
+          adUser: cached,
+          viaGroup: expanded.groupCn,
+          viaGroupSid: expanded.groupSid,
+        });
         drafts.push({
           sid: u.sid,
           name: cached?.displayName ?? cached?.samAccountName ?? u.samAccountName,
@@ -335,14 +387,8 @@ export class Enricher {
           viaGroupSid: expanded.groupSid,
           adEnabled: cached?.enabled ?? null,
           isServiceAccount: cached?.isServiceAccount ?? false,
-          severity: classifySeverity({
-            sid: u.sid,
-            source,
-            hasMatchedException: !!exc,
-            adUser: cached,
-            viaGroup: expanded.groupCn,
-            viaGroupSid: expanded.groupSid,
-          }),
+          severity: expandedClass.severity,
+          reasonCode: expandedClass.reasonCode,
           matchedExceptionId: exc?.id ?? null,
         });
       }
@@ -362,6 +408,7 @@ export class Enricher {
           adEnabled: d.adEnabled,
           isServiceAccount: d.isServiceAccount,
           severity: d.severity,
+          reasonCode: d.reasonCode,
           matchedExceptionId: d.matchedExceptionId,
         })),
       );

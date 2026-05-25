@@ -8,6 +8,7 @@ import { MachineDetail } from './components/MachineDetail.tsx';
 import { MachinesPage } from './components/MachinesPage.tsx';
 import { RemediationPage } from './components/RemediationPage.tsx';
 import { SettingsPage } from './components/SettingsPage.tsx';
+import { SeverityPolicyPage } from './components/SeverityPolicyPage.tsx';
 import { ApiError, api } from './lib/api.ts';
 
 interface SessionState {
@@ -94,6 +95,7 @@ export function App() {
       {route === 'findings' && <FindingsPage />}
       {route === 'events' && <EventsPage />}
       {route === 'remediation' && <RemediationPage />}
+      {route === 'severity-policy' && <SeverityPolicyPage />}
       {route === 'settings' && <SettingsPage />}
     </Layout>
   );
