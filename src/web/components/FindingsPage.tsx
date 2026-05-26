@@ -1,30 +1,56 @@
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
 import { api, buildQuery } from '@web/lib/api.ts';
+import { useEffect, useState } from 'react';
+import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 import { Pagination } from './Pagination.tsx';
 import { RemediationModal, type RemediationTarget } from './RemediationModal.tsx';
 import { SeverityBadge } from './SeverityBadge.tsx';
-import { tableStyle, tdStyle, thStyle } from './Dashboard.tsx';
 
 type Tab = 'by-machine' | 'by-user' | 'by-group';
 
 const SEV_OPTIONS = ['critical', 'high', 'medium', 'low', 'info'] as const;
 const SOURCE_OPTIONS = ['AD_USER', 'LOCAL_USER', 'WELL_KNOWN', 'ORPHAN_SID'] as const;
+type SourceKey = (typeof SOURCE_OPTIONS)[number];
 
 export function FindingsPage() {
   const [tab, setTab] = useState<Tab>('by-machine');
+
+  // Filtros da aba "Por máquina"
   const [q, setQ] = useState('');
   const [severity, setSeverity] = useState<string[]>(['critical', 'high']);
   const [source, setSource] = useState<string[]>([]);
   const [hideExceptions, setHideExceptions] = useState(true);
   const [onlyOrphans, setOnlyOrphans] = useState(false);
 
+  // Filtros da aba "Por usuário" — vivem aqui (não em FindingsByUser) para que
+  // o botão "Exportar" tenha acesso ao estado completo dos filtros.
+  const [userQ, setUserQ] = useState('');
+  const [userSources, setUserSources] = useState<SourceKey[]>(['AD_USER', 'ORPHAN_SID']);
+  const [userHideServiceAccounts, setUserHideServiceAccounts] = useState(true);
+  const [userHideExceptions, setUserHideExceptions] = useState(true);
+  const [userOnlyEnabled, setUserOnlyEnabled] = useState(true);
+  const [userOnlyDirect, setUserOnlyDirect] = useState(false);
+
+  const exportHref =
+    tab === 'by-machine'
+      ? `/api/v1/export/findings.csv${buildQuery({ q, severity, source, hideExceptions, onlyOrphans })}`
+      : tab === 'by-user'
+        ? `/api/v1/export/findings-by-user.zip${buildQuery({
+            q: userQ,
+            source: userSources,
+            hideExceptions: userHideExceptions,
+            hideServiceAccounts: userHideServiceAccounts,
+            onlyEnabled: userOnlyEnabled,
+            onlyDirect: userOnlyDirect,
+          })}`
+        : '/api/v1/export/findings-by-group.csv';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
         <h1 style={{ margin: 0 }}>Achados</h1>
         <a
-          href={`/api/v1/export/findings.csv${buildQuery({ severity, source, hideExceptions })}`}
+          href={exportHref}
           style={{
             background: 'var(--color-accent)',
             color: 'white',
@@ -34,7 +60,7 @@ export function FindingsPage() {
             textDecoration: 'none',
           }}
         >
-          Exportar CSV
+          {tab === 'by-user' ? 'Exportar ZIP' : 'Exportar CSV'}
         </a>
       </div>
 
@@ -52,7 +78,11 @@ export function FindingsPage() {
               borderRadius: 6,
             }}
           >
-            {t === 'by-machine' ? 'Por máquina' : t === 'by-user' ? 'Por usuário' : 'Por grupo herdado'}
+            {t === 'by-machine'
+              ? 'Por máquina'
+              : t === 'by-user'
+                ? 'Por usuário'
+                : 'Por grupo herdado'}
           </button>
         ))}
       </div>
@@ -71,7 +101,22 @@ export function FindingsPage() {
           setOnlyOrphans={setOnlyOrphans}
         />
       )}
-      {tab === 'by-user' && <FindingsByUser />}
+      {tab === 'by-user' && (
+        <FindingsByUser
+          q={userQ}
+          setQ={setUserQ}
+          sources={userSources}
+          setSources={setUserSources}
+          hideServiceAccounts={userHideServiceAccounts}
+          setHideServiceAccounts={setUserHideServiceAccounts}
+          hideExceptions={userHideExceptions}
+          setHideExceptions={setUserHideExceptions}
+          onlyEnabled={userOnlyEnabled}
+          setOnlyEnabled={setUserOnlyEnabled}
+          onlyDirect={userOnlyDirect}
+          setOnlyDirect={setUserOnlyDirect}
+        />
+      )}
       {tab === 'by-group' && <FindingsByGroup />}
     </div>
   );
@@ -103,7 +148,18 @@ function FindingsByMachine(props: {
   onlyOrphans: boolean;
   setOnlyOrphans: (v: boolean) => void;
 }) {
-  const { q, setQ, severity, setSeverity, source, setSource, hideExceptions, setHideExceptions, onlyOrphans, setOnlyOrphans } = props;
+  const {
+    q,
+    setQ,
+    severity,
+    setSeverity,
+    source,
+    setSource,
+    hideExceptions,
+    setHideExceptions,
+    onlyOrphans,
+    setOnlyOrphans,
+  } = props;
 
   const [removeTarget, setRemoveTarget] = useState<RemediationTarget | null>(null);
   const [page, setPage] = useState(1);
@@ -169,11 +225,7 @@ function FindingsByMachine(props: {
           }
         />
 
-        <Toggle
-          label="Ocultar exceções"
-          value={hideExceptions}
-          onChange={setHideExceptions}
-        />
+        <Toggle label="Ocultar exceções" value={hideExceptions} onChange={setHideExceptions} />
         <Toggle label="Só SIDs órfãos" value={onlyOrphans} onChange={setOnlyOrphans} />
       </aside>
 
@@ -253,7 +305,10 @@ function FindingsByMachine(props: {
               })}
               {data && data.items.length === 0 && (
                 <tr>
-                  <td colSpan={8} style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}>
+                  <td
+                    colSpan={8}
+                    style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}
+                  >
                     Nenhum achado.
                   </td>
                 </tr>
@@ -316,19 +371,34 @@ interface MachineRow {
   has_exception: boolean;
 }
 
-const ALL_SOURCES = ['AD_USER', 'LOCAL_USER', 'WELL_KNOWN', 'ORPHAN_SID'] as const;
-type SourceKey = (typeof ALL_SOURCES)[number];
-
-function FindingsByUser() {
-  const [q, setQ] = useState('');
-  // Por padrão mostra só o que requer atenção do operador: AD_USER (usuários
-  // nominais) e ORPHAN_SID (contas estranhas). Esconde LOCAL_USER e WELL_KNOWN
-  // que poluem com "HOSTNAME\Administrador" e contas locais.
-  const [sources, setSources] = useState<SourceKey[]>(['AD_USER', 'ORPHAN_SID']);
-  const [hideServiceAccounts, setHideServiceAccounts] = useState(true);
-  const [hideExceptions, setHideExceptions] = useState(true);
-  const [onlyEnabled, setOnlyEnabled] = useState(true);
-  const [onlyDirect, setOnlyDirect] = useState(false);
+function FindingsByUser(props: {
+  q: string;
+  setQ: (s: string) => void;
+  sources: SourceKey[];
+  setSources: (s: SourceKey[]) => void;
+  hideServiceAccounts: boolean;
+  setHideServiceAccounts: (v: boolean) => void;
+  hideExceptions: boolean;
+  setHideExceptions: (v: boolean) => void;
+  onlyEnabled: boolean;
+  setOnlyEnabled: (v: boolean) => void;
+  onlyDirect: boolean;
+  setOnlyDirect: (v: boolean) => void;
+}) {
+  const {
+    q,
+    setQ,
+    sources,
+    setSources,
+    hideServiceAccounts,
+    setHideServiceAccounts,
+    hideExceptions,
+    setHideExceptions,
+    onlyEnabled,
+    setOnlyEnabled,
+    onlyDirect,
+    setOnlyDirect,
+  } = props;
   const [expandedSid, setExpandedSid] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -338,7 +408,7 @@ function FindingsByUser() {
   }, [q, sources, hideServiceAccounts, hideExceptions, onlyEnabled, onlyDirect, pageSize]);
 
   const toggleSource = (s: SourceKey) => {
-    setSources((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
+    setSources(sources.includes(s) ? sources.filter((x) => x !== s) : [...sources, s]);
   };
 
   const { data, isLoading } = useQuery({
@@ -394,7 +464,7 @@ function FindingsByUser() {
 
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <span style={{ fontSize: 11, color: 'var(--color-muted)' }}>Origem:</span>
-          {ALL_SOURCES.map((s) => (
+          {SOURCE_OPTIONS.map((s) => (
             <button
               type="button"
               key={s}
@@ -426,11 +496,7 @@ function FindingsByUser() {
           value={hideServiceAccounts}
           onChange={setHideServiceAccounts}
         />
-        <Toggle
-          label="Esconder exceções"
-          value={hideExceptions}
-          onChange={setHideExceptions}
-        />
+        <Toggle label="Esconder exceções" value={hideExceptions} onChange={setHideExceptions} />
       </div>
 
       <div
@@ -453,7 +519,10 @@ function FindingsByUser() {
                 <th style={thStyle}>Email</th>
                 <th style={thStyle}>Departamento</th>
                 <th style={thStyle}>AD</th>
-                <th style={{ ...thStyle, textAlign: 'right' }} title="Total de máquinas onde é admin">
+                <th
+                  style={{ ...thStyle, textAlign: 'right' }}
+                  title="Total de máquinas onde é admin"
+                >
                   Máquinas
                 </th>
                 <th
@@ -487,7 +556,10 @@ function FindingsByUser() {
               })}
               {data && data.items.length === 0 && (
                 <tr>
-                  <td colSpan={12} style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}>
+                  <td
+                    colSpan={12}
+                    style={{ ...tdStyle, textAlign: 'center', color: 'var(--color-muted)' }}
+                  >
                     Nenhum usuário casa com esses filtros.
                   </td>
                 </tr>
@@ -582,8 +654,7 @@ function UserAggregateRow({
             ...tdStyle,
             textAlign: 'right',
             fontWeight: user.direct_machine_count > 0 ? 600 : 400,
-            color:
-              user.direct_machine_count > 0 ? 'var(--color-critical)' : 'var(--color-muted)',
+            color: user.direct_machine_count > 0 ? 'var(--color-critical)' : 'var(--color-muted)',
           }}
           title={
             user.direct_machine_count > 0
@@ -628,7 +699,10 @@ function UserAggregateRow({
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={12} style={{ ...tdStyle, padding: 16, background: 'var(--color-surface-2)' }}>
+          <td
+            colSpan={12}
+            style={{ ...tdStyle, padding: 16, background: 'var(--color-surface-2)' }}
+          >
             {isLoading ? (
               <div>Carregando máquinas...</div>
             ) : machines && machines.items.length > 0 ? (
@@ -655,9 +729,7 @@ function UserAggregateRow({
                         <td style={tdStyle}>
                           <SeverityBadge value={m.severity} />
                         </td>
-                        <td style={tdStyle}>
-                          {new Date(m.last_seen_at).toLocaleString('pt-BR')}
-                        </td>
+                        <td style={tdStyle}>{new Date(m.last_seen_at).toLocaleString('pt-BR')}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -699,44 +771,46 @@ function FindingsByGroup() {
   if (isLoading) return <div>Carregando...</div>;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-    <div
-      style={{
-        background: 'var(--color-surface)',
-        border: '1px solid var(--color-border)',
-        borderRadius: 12,
-        padding: 8,
-      }}
-    >
-      <table style={tableStyle}>
-        <thead>
-          <tr>
-            <th style={thStyle}>Grupo herdado</th>
-            <th style={thStyle}>SID</th>
-            <th style={{ ...thStyle, textAlign: 'right' }}>Usuários únicos</th>
-            <th style={{ ...thStyle, textAlign: 'right' }}>Máquinas alcançadas</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data?.items.map((g) => (
-            <tr key={g.group_sid}>
-              <td style={tdStyle}>{g.group_name}</td>
-              <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11 }}>{g.group_sid}</td>
-              <td style={{ ...tdStyle, textAlign: 'right' }}>{g.user_count}</td>
-              <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 600 }}>{g.machine_count}</td>
+      <div
+        style={{
+          background: 'var(--color-surface)',
+          border: '1px solid var(--color-border)',
+          borderRadius: 12,
+          padding: 8,
+        }}
+      >
+        <table style={tableStyle}>
+          <thead>
+            <tr>
+              <th style={thStyle}>Grupo herdado</th>
+              <th style={thStyle}>SID</th>
+              <th style={{ ...thStyle, textAlign: 'right' }}>Usuários únicos</th>
+              <th style={{ ...thStyle, textAlign: 'right' }}>Máquinas alcançadas</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-    {data && (
-      <Pagination
-        page={page}
-        pageSize={pageSize}
-        total={data.total}
-        onPageChange={setPage}
-        onPageSizeChange={setPageSize}
-      />
-    )}
+          </thead>
+          <tbody>
+            {data?.items.map((g) => (
+              <tr key={g.group_sid}>
+                <td style={tdStyle}>{g.group_name}</td>
+                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11 }}>{g.group_sid}</td>
+                <td style={{ ...tdStyle, textAlign: 'right' }}>{g.user_count}</td>
+                <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 600 }}>
+                  {g.machine_count}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {data && (
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={data.total}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+        />
+      )}
     </div>
   );
 }
@@ -756,16 +830,19 @@ function FilterGroup({
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div style={{ fontSize: 11, color: 'var(--color-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+      <div
+        style={{
+          fontSize: 11,
+          color: 'var(--color-muted)',
+          textTransform: 'uppercase',
+          letterSpacing: 0.5,
+        }}
+      >
         {label}
       </div>
       {options.map((o) => (
         <label key={o} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-          <input
-            type="checkbox"
-            checked={selected.includes(o)}
-            onChange={() => onToggle(o)}
-          />
+          <input type="checkbox" checked={selected.includes(o)} onChange={() => onToggle(o)} />
           {renderOption ? renderOption(o) : o}
         </label>
       ))}

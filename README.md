@@ -86,6 +86,8 @@ Para desfazer em uma máquina: `.\Get-LocalAdmins.ps1 -IngestUrl <x> -IngestToke
 | GET  | `/api/v1/stats/dashboard` | sessão |
 | GET / POST / DELETE | `/api/v1/exceptions[/:id]` | sessão |
 | GET  | `/api/v1/export/findings.csv` | sessão |
+| GET  | `/api/v1/export/findings-by-user.zip` | sessão |
+| GET  | `/api/v1/export/findings-by-group.csv` | sessão |
 | POST | `/api/v1/ad/test` | sessão |
 | GET  | `/api/v1/remediation` | sessão |
 | POST | `/api/v1/remediation/plan` | sessão |
@@ -121,7 +123,7 @@ Contrato Zod compartilhado entre PS↔servidor: [`src/shared/ingest-contract.ts`
 6. Em `/machines/:id` confira os admins resolvidos com severidade.
 7. Adicione um usuário no Administrators local e re-rode → `/events` mostra `ADMIN_ADDED`.
 8. Crie uma exception em `/settings` para um grupo conhecido → no próximo enricher run a severidade vira `info`.
-9. Em `/findings` → "Exportar CSV" → planilha abre no Excel (UTF-8 BOM).
+9. Em `/findings` → "Exportar CSV"/"Exportar ZIP" → exporta a aba atual respeitando os filtros aplicados (UTF-8 BOM). "Por máquina" e "Por grupo herdado" baixam `.csv`; "Por usuário" baixa um `.zip` com `usuarios.csv` (agregado) + `usuarios-maquinas.csv` (expandido).
 10. Em `Scheduled Tasks` da VM, `MM-AdminSearch-Daily` deve estar listada.
 
 ## Runbook (operação)
