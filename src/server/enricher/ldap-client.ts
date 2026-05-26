@@ -85,13 +85,48 @@ export class LdapPool {
     attributes: string[],
     options?: { scope?: 'base' | 'one' | 'sub'; sizeLimit?: number },
   ): Promise<T[]> {
+    return this.doSearch<T>(filter, attributes, {
+      scope: options?.scope,
+      sizeLimit: options?.sizeLimit,
+    });
+  }
+
+  /**
+   * Search com Simple Paged Results Control (RFC 2696). Use em queries que
+   * podem retornar mais de 1000 itens — o AD corta sem paginação. Retorna
+   * todos os entries agregados após percorrer todas as páginas.
+   *
+   * Custo: 1 round-trip LDAP a cada `pageSize` resultados. Page size típico
+   * para AD: 1000 (MaxPageSize default).
+   */
+  async searchPaged<T = Record<string, unknown>>(
+    filter: string,
+    attributes: string[],
+    options?: { scope?: 'base' | 'one' | 'sub'; pageSize?: number },
+  ): Promise<T[]> {
+    return this.doSearch<T>(filter, attributes, {
+      scope: options?.scope,
+      paged: { pageSize: options?.pageSize ?? 1000 },
+    });
+  }
+
+  private async doSearch<T>(
+    filter: string,
+    attributes: string[],
+    options: {
+      scope?: 'base' | 'one' | 'sub';
+      sizeLimit?: number;
+      paged?: { pageSize: number };
+    },
+  ): Promise<T[]> {
     const client = await this.getClient();
     try {
       const { searchEntries, searchReferences } = await client.search(this.cfg.baseDn, {
         filter,
         attributes,
-        scope: options?.scope ?? 'sub',
-        sizeLimit: options?.sizeLimit ?? 0,
+        scope: options.scope ?? 'sub',
+        sizeLimit: options.sizeLimit ?? 0,
+        paged: options.paged,
         // Garante que atributos binários (objectSid, objectGUID) venham
         // como Buffer ao invés de string base64.
         explicitBufferAttributes: ['objectSid', 'objectGUID'],

@@ -8,7 +8,7 @@ Composição:
 
 - **Agente PowerShell** (`scripts/Get-LocalAdmins.ps1`) distribuído via ScreenConnect e auto-instalado como Scheduled Task diária.
 - **Servidor central** (Fastify + Drizzle + Postgres) que recebe os scans, deduplica, cruza com o AD via LDAP read-only, calcula severidade, gera diff entre coletas e expõe BI/relatórios.
-- **Web UI** (React 19 + ECharts) com Dashboard, Máquinas, Achados, Eventos e Configurações.
+- **Web UI** (React 19 + ECharts) com Dashboard, Máquinas, Achados, Eventos, Política de Severidade, Grupos Institucionais, **AD — Grupos e Usuários** e Configurações.
 
 ## Stack
 
@@ -61,7 +61,10 @@ Para desfazer em uma máquina: `.\Get-LocalAdmins.ps1 -IngestUrl <x> -IngestToke
 | `machines` | uma linha por máquina física (identidade canônica por FQDN + serial BIOS/UUID) |
 | `scan_runs` | cada execução do agente, idempotente por `scan_id` (UUID gerado no PS) |
 | `raw_members` | snapshot exato do que o agente viu no grupo `Administrators` local |
-| `ad_users` | cache de atributos do AD (TTL 24h padrão) |
+| `ad_users` | cache de atributos do AD (TTL 24h padrão; ampliado pelo sync de diretório) |
+| `ad_groups` | espelho completo dos grupos do AD (sync periódico, v0.6.0) |
+| `ad_group_memberships` | relação user × group já expandida transitivamente (sync periódico, v0.6.0) |
+| `ad_directory_syncs` | histórico de execuções do sync de diretório AD |
 | `effective_members` | usuários EFETIVOS pós-expansão recursiva de grupos AD, com `severity` |
 | `findings_events` | diff `ADMIN_ADDED` / `ADMIN_REMOVED` / `ORPHAN_DETECTED` / `MACHINE_RENAMED` |
 | `exceptions` | whitelist (escopo global / por máquina / por tag) |
@@ -88,6 +91,14 @@ Para desfazer em uma máquina: `.\Get-LocalAdmins.ps1 -IngestUrl <x> -IngestToke
 | GET  | `/api/v1/export/findings.csv` | sessão |
 | GET  | `/api/v1/export/findings-by-user.zip` | sessão |
 | GET  | `/api/v1/export/findings-by-group.csv` | sessão |
+| GET  | `/api/v1/ad-directory/groups` | sessão |
+| GET  | `/api/v1/ad-directory/groups/:sid/members` | sessão |
+| GET  | `/api/v1/ad-directory/users` | sessão |
+| GET  | `/api/v1/ad-directory/users/:sid/groups` | sessão |
+| POST | `/api/v1/ad-directory/sync` | sessão |
+| GET  | `/api/v1/ad-directory/sync/status` | sessão |
+| GET  | `/api/v1/ad-directory/sync/history` | sessão |
+| GET  | `/api/v1/export/ad-directory.csv` | sessão |
 | POST | `/api/v1/ad/test` | sessão |
 | GET  | `/api/v1/remediation` | sessão |
 | POST | `/api/v1/remediation/plan` | sessão |
@@ -195,10 +206,33 @@ A partir da v0.2.0 é possível **remover** um usuário do grupo `Administrators
 
 **Como acelerar a execução**: se você não quer esperar a Scheduled Task diária, dispare o agente via ScreenConnect com `-Source manual` ou execute `schtasks /run /tn MM-AdminSearch-Daily` na máquina.
 
+## AD — Grupos e Usuários (v0.6.0)
+
+Nova tela acessível pelo menu lateral "AD — Grupos e Usuários" — mostra o **catálogo completo do AD da empresa**, independente das máquinas escaneadas. Duas visões:
+
+- **Grupos**: lista todos os grupos do AD (filtro por escopo `global/domain_local/universal/builtin` e por security/distribution). Clicar em um grupo abre um drawer lateral com seus membros transitivos.
+- **Usuários**: lista todos os usuários do AD com contagem de grupos a que pertencem (filtro: só habilitados, esconder service accounts). Clicar em um usuário abre os grupos a que pertence (com marca direto vs. herdado).
+
+A exportação CSV gera **1 linha por par usuário×grupo** — usuário com N grupos vira N linhas com os mesmos dados do usuário.
+
+**Como popula**: job de sync varre TODO o AD via LDAP paginado (Simple Paged Results) e salva em 3 tabelas (`ad_groups`, `ad_group_memberships`, ampliando `ad_users`). Roda automaticamente a cada `AD_DIRECTORY_SYNC_INTERVAL_HOURS` (default 6h) + botão "Sincronizar agora" na tela. Concorrência travada por unique partial index — apenas 1 sync por vez no cluster. Falha não corrompe dados (rebuild atômico em transação única).
+
+**Variáveis de ambiente**:
+
+| Var | Default | Função |
+|---|---|---|
+| `AD_DIRECTORY_SYNC_ENABLED` | `true` | Liga/desliga o scheduler |
+| `AD_DIRECTORY_SYNC_INTERVAL_HOURS` | `6` | Intervalo entre execuções periódicas |
+| `AD_DIRECTORY_LDAP_PAGE_SIZE` | `1000` | Tamanho de página LDAP (default do AD = 1000) |
+| `AD_DIRECTORY_RUN_ON_BOOT` | `true` | Dispara um sync ~30s após o boot do servidor |
+
+**Permissão LDAP**: a service account precisa de leitura em todas as OUs com users e groups — se a empresa tem OUs sub-departamentais, garanta `Read` na raiz (`CN=Users` + qualquer OU customizada). Sem isso o sync devolve contadores parciais sem erro explícito.
+
 ## Histórico de versões
 
 | Versão | Data | Notas |
 |---|---|---|
+| 0.6.0 | 2026-05-26 | **Tela "AD — Grupos e Usuários"**. Sync periódico do diretório completo do AD (a cada 6h, default; manual via botão). Duas visões mestre-detalhe: grupos→membros e usuários→grupos com expansão transitiva (LDAP_MATCHING_RULE_IN_CHAIN). Exportação CSV com 1 linha por par usuário×grupo. Novo método `LdapPool.searchPaged()` usando Simple Paged Results para varreduras > 1000 entries. Concorrência travada por unique partial index. |
 | 0.3.0 | 2026-05-22 | **Resolução correta de grupos do domínio**. Agente PS agora roda `Translate([NTAccount])` em todo SID e detecta grupos built-in do domínio pelo RID (512/518/519/520) — corrige o `Get-LocalGroupMember` que reportava `Domain Admins` / `MM - Workstation Admins` como `User` com nome `{}`. Servidor expande Domain Admins/Enterprise Admins/Schema Admins via LDAP (severidade `critical` para o grupo, `high` para os membros herdados). Adicionado **backstop**: usuários que não casam no cache LDAP são re-tentados como grupo antes de cair em `ORPHAN_SID`. |
 | 0.2.0 | 2026-05-22 | Remediação ativa — remover usuários do Administrators local via Web UI com fluxo planned → confirmed → executed. |
 | 0.1.0 | 2026-05-22 | Primeira versão — ingestão, enricher LDAP, BI, exportação CSV. |

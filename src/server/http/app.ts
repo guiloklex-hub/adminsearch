@@ -4,10 +4,12 @@ import { fileURLToPath } from 'node:url';
 import fastifyHelmet from '@fastify/helmet';
 import fastifyRateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
+import type { AdDirectorySyncRunner } from '@server/ad-sync/runner.ts';
 import type { DbClient } from '@server/db/client.ts';
 import type { LdapPool } from '@server/enricher/ldap-client.ts';
 import authPlugin from '@server/http/plugins/auth.ts';
 import { registerErrorHandler } from '@server/http/plugins/error-handler.ts';
+import { registerAdDirectoryRoutes } from '@server/http/routes/ad-directory.ts';
 import { registerAdRoutes } from '@server/http/routes/ad.ts';
 import { registerAdminReprocessRoutes } from '@server/http/routes/admin-reprocess.ts';
 import { registerAuthRoutes } from '@server/http/routes/auth.ts';
@@ -32,6 +34,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export interface BuildAppOptions {
   db: DbClient;
   ldap: LdapPool | null;
+  adDirectoryRunner: AdDirectorySyncRunner | null;
   logger: FastifyBaseLogger;
   jwtSecret: string;
   ingestToken: string;
@@ -121,6 +124,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   });
   await app.register(async (scope) => {
     await registerAdRoutes(scope, { ldap: opts.ldap });
+  });
+  await app.register(async (scope) => {
+    await registerAdDirectoryRoutes(scope, {
+      db: opts.db,
+      runner: opts.adDirectoryRunner,
+    });
   });
 
   // Front estático (build do Vite)

@@ -39,6 +39,21 @@ const envSchema = z.object({
   AD_USER_CACHE_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(24),
   ENRICHER_POLL_MS: z.coerce.number().int().min(1000).max(60_000).default(5000),
 
+  // AD Directory sync (tela "AD - Grupos e Usuários").
+  // Job que varre TODO o AD periodicamente e popula ad_groups,
+  // ad_group_memberships e amplia ad_users. Default: enabled se LDAP
+  // configurado, 6h de intervalo, page size 1000.
+  AD_DIRECTORY_SYNC_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((v) => (typeof v === 'string' ? v.toLowerCase() === 'true' : v))
+    .default(true),
+  AD_DIRECTORY_SYNC_INTERVAL_HOURS: z.coerce.number().min(0.05).max(168).default(6),
+  AD_DIRECTORY_LDAP_PAGE_SIZE: z.coerce.number().int().min(100).max(5000).default(1000),
+  AD_DIRECTORY_RUN_ON_BOOT: z
+    .union([z.boolean(), z.string()])
+    .transform((v) => (typeof v === 'string' ? v.toLowerCase() === 'true' : v))
+    .default(true),
+
   REMEDIATION_MAX_PER_DISPATCH: z.coerce.number().int().min(1).max(50).default(10),
   REMEDIATION_PLAN_RATE_PER_MIN: z.coerce.number().int().min(1).max(500).default(20),
 

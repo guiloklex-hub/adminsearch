@@ -9,6 +9,7 @@ const NAV = [
   { id: 'remediation', label: 'A executar' },
   { id: 'severity-policy', label: 'Política de Severidade' },
   { id: 'institutional-groups', label: 'Grupos Institucionais' },
+  { id: 'ad-directory', label: 'AD — Grupos e Usuários' },
   { id: 'settings', label: 'Configurações' },
 ] as const;
 

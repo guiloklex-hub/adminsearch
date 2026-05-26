@@ -1,3 +1,5 @@
+import { AdDirectorySyncRunner } from '@server/ad-sync/runner.ts';
+import { type SchedulerHandle, startAdDirectoryScheduler } from '@server/ad-sync/scheduler.ts';
 import { createDb } from '@server/db/client.ts';
 import { runMigrations } from '@server/db/migrate.ts';
 import { Enricher } from '@server/enricher/index.ts';
@@ -31,6 +33,8 @@ async function main(): Promise<void> {
 
   let ldap: LdapPool | null = null;
   let enricher: Enricher | null = null;
+  let adDirectoryRunner: AdDirectorySyncRunner | null = null;
+  let adDirectoryScheduler: SchedulerHandle | null = null;
 
   if (ldapConfigured(env)) {
     try {
@@ -54,10 +58,28 @@ async function main(): Promise<void> {
       });
       enricher.start();
       logger.info('enricher LDAP iniciado');
+
+      adDirectoryRunner = new AdDirectorySyncRunner({
+        db,
+        ldap,
+        logger,
+        pageSize: env.AD_DIRECTORY_LDAP_PAGE_SIZE,
+      });
+      if (env.AD_DIRECTORY_SYNC_ENABLED) {
+        adDirectoryScheduler = startAdDirectoryScheduler({
+          runner: adDirectoryRunner,
+          logger,
+          intervalMs: env.AD_DIRECTORY_SYNC_INTERVAL_HOURS * 3600_000,
+          runOnBoot: env.AD_DIRECTORY_RUN_ON_BOOT,
+        });
+      } else {
+        logger.warn('AD_DIRECTORY_SYNC_ENABLED=false — scheduler de diretório AD desabilitado');
+      }
     } catch (err) {
       logger.error({ err }, 'falha ao iniciar LDAP — enricher desabilitado');
       ldap = null;
       enricher = null;
+      adDirectoryRunner = null;
     }
   } else {
     logger.warn('LDAP não configurado — enricher desabilitado, scans ficarão pendentes');
@@ -66,6 +88,7 @@ async function main(): Promise<void> {
   const app = await buildApp({
     db,
     ldap,
+    adDirectoryRunner,
     logger,
     jwtSecret: env.JWT_SECRET,
     ingestToken: env.INGEST_TOKEN,
@@ -79,6 +102,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'shutdown solicitado');
     try {
+      adDirectoryScheduler?.stop();
       enricher?.stop();
       await app.close();
       await ldap?.dispose();

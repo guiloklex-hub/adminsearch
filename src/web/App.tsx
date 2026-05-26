@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AdDirectoryPage } from './components/AdDirectoryPage.tsx';
 import { Dashboard } from './components/Dashboard.tsx';
 import { EventsPage } from './components/EventsPage.tsx';
 import { FindingsPage } from './components/FindingsPage.tsx';
@@ -98,6 +99,7 @@ export function App() {
       {route === 'remediation' && <RemediationPage />}
       {route === 'severity-policy' && <SeverityPolicyPage />}
       {route === 'institutional-groups' && <InstitutionalGroupsPage />}
+      {route === 'ad-directory' && <AdDirectoryPage />}
       {route === 'settings' && <SettingsPage />}
     </Layout>
   );

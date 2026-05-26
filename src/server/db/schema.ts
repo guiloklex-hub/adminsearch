@@ -118,6 +118,66 @@ export const adUsers = pgTable(
   }),
 );
 
+/* ---------- AD groups (espelho completo do AD) ---------- */
+
+export const adGroups = pgTable(
+  'ad_groups',
+  {
+    sid: text('sid').primaryKey(),
+    distinguishedName: text('distinguished_name').notNull(),
+    samAccountName: text('sam_account_name'),
+    cn: text('cn'),
+    displayName: text('display_name'),
+    description: text('description'),
+    groupType: integer('group_type'),
+    isSecurity: boolean('is_security'),
+    scope: text('scope'), // 'global' | 'domain_local' | 'universal' | 'builtin'
+    memberCount: integer('member_count').notNull().default(0),
+    lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    samIdx: index('ad_groups_sam_idx').on(t.samAccountName),
+    displayIdx: index('ad_groups_display_idx').on(t.displayName),
+  }),
+);
+
+/* ---------- AD group memberships (user × group já expandido transitivamente) ---------- */
+
+export const adGroupMemberships = pgTable(
+  'ad_group_memberships',
+  {
+    userSid: text('user_sid').notNull(),
+    groupSid: text('group_sid').notNull(),
+    isDirect: boolean('is_direct').notNull().default(false),
+  },
+  (t) => ({
+    pk: uniqueIndex('ad_group_memberships_pkey').on(t.userSid, t.groupSid),
+    userIdx: index('ad_group_memberships_user_idx').on(t.userSid),
+    groupIdx: index('ad_group_memberships_group_idx').on(t.groupSid),
+  }),
+);
+
+/* ---------- AD directory syncs (histórico de execuções) ---------- */
+
+export const adDirectorySyncs = pgTable(
+  'ad_directory_syncs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    status: text('status').notNull(), // 'running' | 'success' | 'failed'
+    triggeredBy: text('triggered_by').notNull(), // 'scheduler' | 'manual:<user>' | 'boot'
+    usersTotal: integer('users_total'),
+    groupsTotal: integer('groups_total'),
+    membershipsTotal: integer('memberships_total'),
+    durationMs: integer('duration_ms'),
+    errorMessage: text('error_message'),
+  },
+  (t) => ({
+    startedIdx: index('ad_directory_syncs_started_idx').on(t.startedAt.desc()),
+  }),
+);
+
 /* ---------- Effective members (pós-expansão) ---------- */
 
 export const effectiveMembers = pgTable(
@@ -306,6 +366,12 @@ export type NewScanRun = typeof scanRuns.$inferInsert;
 export type RawMember = typeof rawMembers.$inferSelect;
 export type EffectiveMember = typeof effectiveMembers.$inferSelect;
 export type AdUser = typeof adUsers.$inferSelect;
+export type AdGroup = typeof adGroups.$inferSelect;
+export type NewAdGroup = typeof adGroups.$inferInsert;
+export type AdGroupMembership = typeof adGroupMemberships.$inferSelect;
+export type NewAdGroupMembership = typeof adGroupMemberships.$inferInsert;
+export type AdDirectorySync = typeof adDirectorySyncs.$inferSelect;
+export type NewAdDirectorySync = typeof adDirectorySyncs.$inferInsert;
 export type FindingsEvent = typeof findingsEvents.$inferSelect;
 export type Exception = typeof exceptions.$inferSelect;
 export type Admin = typeof admins.$inferSelect;

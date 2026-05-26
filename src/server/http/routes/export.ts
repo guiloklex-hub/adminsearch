@@ -42,6 +42,14 @@ const ByUserQuery = z.object({
   onlyDirect: csvBool,
 });
 
+const AdDirectoryExportQuery = z.object({
+  q: z.string().trim().max(120).optional(),
+  onlyEnabled: csvBool,
+  hideServiceAccounts: csvBool,
+  onlyDirect: csvBool,
+  department: z.string().trim().max(255).optional(),
+});
+
 export async function registerExportRoutes(
   app: FastifyInstance,
   deps: { db: DbClient },
@@ -353,6 +361,105 @@ export async function registerExportRoutes(
     return reply.send(archive);
   });
 
+  // ---------------- AD Directory — catálogo completo do AD ----------------
+  // 1 linha por par (usuário, grupo). Usuário com N grupos vira N linhas.
+  // Fonte: ad_users, ad_groups e ad_group_memberships (populadas pelo sync).
+  app.get('/api/v1/export/ad-directory.csv', async (req, reply) => {
+    const q = AdDirectoryExportQuery.parse(req.query);
+
+    const conditions: string[] = [];
+    if (q.onlyEnabled) conditions.push('COALESCE(u.enabled, true) = true');
+    if (q.hideServiceAccounts) conditions.push('COALESCE(u.is_service_account, false) = false');
+    if (q.onlyDirect) conditions.push('m.is_direct = true');
+    if (q.department) {
+      const safe = q.department.replace(/'/g, "''");
+      conditions.push(`COALESCE(u.department, '') = '${safe}'`);
+    }
+    if (q.q) {
+      const safe = q.q.replace(/'/g, "''");
+      conditions.push(
+        `(COALESCE(u.display_name,'') ILIKE '%${safe}%' OR COALESCE(u.sam_account_name,'') ILIKE '%${safe}%' OR COALESCE(u.email,'') ILIKE '%${safe}%' OR COALESCE(u.department,'') ILIKE '%${safe}%' OR u.sid ILIKE '%${safe}%' OR COALESCE(g.display_name,'') ILIKE '%${safe}%')`,
+      );
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const result = await deps.db.db.execute(sql`
+      SELECT
+        u.sid AS user_sid,
+        u.sam_account_name AS user_sam,
+        u.user_principal_name AS user_upn,
+        COALESCE(u.display_name, u.sam_account_name, u.sid) AS user_display_name,
+        u.email AS user_email,
+        u.department AS user_department,
+        u.title AS user_title,
+        u.enabled AS user_enabled,
+        u.is_service_account,
+        u.last_logon,
+        g.sid AS group_sid,
+        g.sam_account_name AS group_sam,
+        COALESCE(g.display_name, g.cn, g.sam_account_name, g.sid) AS group_display_name,
+        g.scope AS group_scope,
+        g.is_security,
+        m.is_direct
+      FROM ad_group_memberships m
+      JOIN ad_users u  ON u.sid  = m.user_sid
+      JOIN ad_groups g ON g.sid = m.group_sid
+      ${sql.raw(whereClause)}
+      ORDER BY user_display_name ASC, group_display_name ASC;
+    `);
+    const rows = result.rows as unknown as AdDirectoryRow[];
+
+    reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header(
+        'Content-Disposition',
+        `attachment; filename="adminsearch-ad-directory-${todayStr()}.csv"`,
+      );
+
+    let out = BOM;
+    out += csvRow([
+      'user_sid',
+      'user_sam',
+      'user_upn',
+      'user_display_name',
+      'user_email',
+      'user_department',
+      'user_title',
+      'user_enabled',
+      'is_service_account',
+      'last_logon',
+      'group_sid',
+      'group_sam',
+      'group_display_name',
+      'group_scope',
+      'is_security',
+      'is_direct',
+    ]);
+    for (const r of rows) {
+      out += csvRow([
+        r.user_sid,
+        r.user_sam,
+        r.user_upn,
+        r.user_display_name,
+        r.user_email,
+        r.user_department,
+        r.user_title,
+        boolStr(r.user_enabled),
+        r.is_service_account ? 'sim' : 'não',
+        r.last_logon ? new Date(r.last_logon).toISOString() : '',
+        r.group_sid,
+        r.group_sam,
+        r.group_display_name,
+        r.group_scope,
+        boolStr(r.is_security),
+        r.is_direct ? 'sim' : 'não',
+      ]);
+    }
+
+    return reply.send(out);
+  });
+
   // ---------------- Visão "Por grupo herdado" ----------------
   app.get('/api/v1/export/findings-by-group.csv', async (_req, reply) => {
     const rowsResult = await deps.db.db.execute(sql`
@@ -442,4 +549,23 @@ interface GroupRow {
   group_sid: string | null;
   user_count: number;
   machine_count: number;
+}
+
+interface AdDirectoryRow {
+  user_sid: string | null;
+  user_sam: string | null;
+  user_upn: string | null;
+  user_display_name: string | null;
+  user_email: string | null;
+  user_department: string | null;
+  user_title: string | null;
+  user_enabled: boolean | null;
+  is_service_account: boolean | null;
+  last_logon: string | Date | null;
+  group_sid: string | null;
+  group_sam: string | null;
+  group_display_name: string | null;
+  group_scope: string | null;
+  is_security: boolean | null;
+  is_direct: boolean | null;
 }
