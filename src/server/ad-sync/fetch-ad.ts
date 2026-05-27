@@ -3,32 +3,40 @@ import { fileTimeToDate, sidBufferToString } from '@server/enricher/sid.ts';
 import type { AppLogger } from '@server/logger.ts';
 import type { FetchedAdGroup, FetchedAdUser, GroupScope } from './types.ts';
 
+// ldapts pode retornar QUALQUER atributo como string OU string[] (inclusive
+// para atributos declarados single-valued no schema do AD). Em alguns ADs
+// também volta `[]` quando o atributo existe mas está vazio. Tipamos como
+// `LdapValue` e normalizamos via `asString` antes de gravar — gravar `[]`
+// numa coluna `text` do Postgres vira a string literal `"{}"` (formato
+// textual de array Postgres) e aparece como `{}` na UI.
+type LdapValue = string | string[] | undefined | null;
+
 interface RawGroup {
   objectSid: Buffer;
-  distinguishedName: string;
-  sAMAccountName?: string;
-  cn?: string;
-  displayName?: string;
-  description?: string | string[];
-  groupType?: string | number;
-  member?: string | string[];
+  distinguishedName: LdapValue;
+  sAMAccountName?: LdapValue;
+  cn?: LdapValue;
+  displayName?: LdapValue;
+  description?: LdapValue;
+  groupType?: string | number | string[];
+  member?: LdapValue;
 }
 
 interface RawUser {
   objectSid: Buffer;
-  sAMAccountName?: string;
-  userPrincipalName?: string;
-  displayName?: string;
-  mail?: string;
-  department?: string;
-  title?: string;
-  manager?: string;
-  distinguishedName: string;
-  userAccountControl?: string | number;
-  pwdLastSet?: string;
-  lastLogonTimestamp?: string;
-  accountExpires?: string;
-  memberOf?: string | string[];
+  sAMAccountName?: LdapValue;
+  userPrincipalName?: LdapValue;
+  displayName?: LdapValue;
+  mail?: LdapValue;
+  department?: LdapValue;
+  title?: LdapValue;
+  manager?: LdapValue;
+  distinguishedName: LdapValue;
+  userAccountControl?: string | number | string[];
+  pwdLastSet?: string | string[];
+  lastLogonTimestamp?: string | string[];
+  accountExpires?: string | string[];
+  memberOf?: LdapValue;
 }
 
 interface RawMemberSid {
@@ -91,24 +99,22 @@ export async function fetchAllGroups(
   for (const e of entries) {
     if (!e.objectSid) continue;
     const sid = sidBufferToString(Buffer.from(e.objectSid));
-    const groupType =
-      e.groupType !== undefined && e.groupType !== null
-        ? Number.parseInt(String(e.groupType), 10)
-        : null;
+    const dn = asString(e.distinguishedName);
+    if (!dn) continue; // sem DN não há como expandir; pula
+    const gtRaw = asString(e.groupType);
+    const groupType = gtRaw !== null ? Number.parseInt(gtRaw, 10) : null;
     const { isSecurity, scope } = classifyGroupType(groupType);
-    const memberRaw = e.member;
-    const memberDns = !memberRaw ? [] : Array.isArray(memberRaw) ? memberRaw : [memberRaw];
     out.push({
       sid,
-      distinguishedName: e.distinguishedName,
-      samAccountName: e.sAMAccountName ?? null,
-      cn: e.cn ?? null,
-      displayName: e.displayName ?? null,
-      description: Array.isArray(e.description) ? e.description.join(' ') : (e.description ?? null),
+      distinguishedName: dn,
+      samAccountName: asString(e.sAMAccountName),
+      cn: asString(e.cn),
+      displayName: asString(e.displayName),
+      description: asStringJoined(e.description, ' '),
       groupType,
       isSecurity,
       scope,
-      memberDns,
+      memberDns: asStringArray(e.member),
     });
   }
   return out;
@@ -134,31 +140,28 @@ export async function fetchAllUsers(
   for (const e of entries) {
     if (!e.objectSid) continue;
     const sid = sidBufferToString(Buffer.from(e.objectSid));
-    const uac = Number(e.userAccountControl ?? 0);
+    const dn = asString(e.distinguishedName);
+    if (!dn) continue; // sem DN, não usamos
+    const uacRaw = asString(e.userAccountControl);
+    const uac = uacRaw !== null ? Number(uacRaw) : 0;
     const enabled = (uac & UAC_DISABLED) === 0;
-    const memberOfRaw = e.memberOf;
-    const directGroupDns = !memberOfRaw
-      ? []
-      : Array.isArray(memberOfRaw)
-        ? memberOfRaw
-        : [memberOfRaw];
 
     out.push({
       sid,
-      samAccountName: e.sAMAccountName ?? null,
-      userPrincipalName: e.userPrincipalName ?? null,
-      displayName: e.displayName ?? null,
-      email: e.mail ?? null,
-      department: e.department ?? null,
-      title: e.title ?? null,
-      managerDn: e.manager ?? null,
-      distinguishedName: e.distinguishedName,
+      samAccountName: asString(e.sAMAccountName),
+      userPrincipalName: asString(e.userPrincipalName),
+      displayName: asString(e.displayName),
+      email: asString(e.mail),
+      department: asString(e.department),
+      title: asString(e.title),
+      managerDn: asString(e.manager),
+      distinguishedName: dn,
       enabled,
-      passwordLastSet: fileTimeToDate(e.pwdLastSet),
-      lastLogon: fileTimeToDate(e.lastLogonTimestamp),
-      accountExpires: fileTimeToDate(e.accountExpires),
+      passwordLastSet: fileTimeToDate(asString(e.pwdLastSet)),
+      lastLogon: fileTimeToDate(asString(e.lastLogonTimestamp)),
+      accountExpires: fileTimeToDate(asString(e.accountExpires)),
       isServiceAccount: detectServiceAccount(e),
-      directGroupDns,
+      directGroupDns: asStringArray(e.memberOf),
     });
   }
   return out;
@@ -204,13 +207,61 @@ function classifyGroupType(groupType: number | null): {
 }
 
 function detectServiceAccount(e: RawUser): boolean {
-  const sam = (e.sAMAccountName ?? '').toLowerCase();
-  const dn = (e.distinguishedName ?? '').toLowerCase();
+  const sam = (asString(e.sAMAccountName) ?? '').toLowerCase();
+  const dn = (asString(e.distinguishedName) ?? '').toLowerCase();
   if (sam.startsWith('svc-') || sam.startsWith('svc_') || sam.endsWith('-svc')) return true;
   if (dn.includes('ou=service accounts')) return true;
   if (dn.includes('ou=services')) return true;
   if (dn.includes('ou=svc')) return true;
   return false;
+}
+
+/**
+ * Normaliza um valor de atributo LDAP (single ou multi-valued) para string|null.
+ * - undefined/null → null
+ * - string vazia/whitespace → null
+ * - array vazio → null
+ * - array com itens → primeiro item não-nulo
+ * - outros tipos → String(v)
+ *
+ * Sem isso, gravar um array `[]` numa coluna text do Postgres vira a string
+ * literal `"{}"` (formato textual de array Postgres), que aparece como `{}`
+ * na UI.
+ */
+function asString(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string') return v.trim() === '' ? null : v;
+  if (typeof v === 'number' || typeof v === 'bigint') return String(v);
+  if (Array.isArray(v)) {
+    for (const item of v) {
+      const s = asString(item);
+      if (s !== null) return s;
+    }
+    return null;
+  }
+  // Buffer ou objeto inesperado — String(buf) volta hex, String(obj) volta
+  // `[object Object]`. Em ambos os casos é melhor null que poluir o banco.
+  return null;
+}
+
+function asStringArray(v: unknown): string[] {
+  if (v === null || v === undefined) return [];
+  if (typeof v === 'string') return v.trim() === '' ? [] : [v];
+  if (Array.isArray(v)) {
+    const out: string[] = [];
+    for (const item of v) {
+      const s = asString(item);
+      if (s !== null) out.push(s);
+    }
+    return out;
+  }
+  return [];
+}
+
+function asStringJoined(v: unknown, sep: string): string | null {
+  const arr = asStringArray(v);
+  if (arr.length === 0) return null;
+  return arr.join(sep);
 }
 
 // RFC 4515 — escapar apenas (), *, \ e NUL.
